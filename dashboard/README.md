@@ -15,10 +15,11 @@ métrica (no espírito de visualizações tipo
 Na raiz do projeto (clone do GitHub):
 
 ```r
-install.packages(c(
-  "shiny", "shinydashboard", "leaflet", "sf", "dplyr",
-  "htmltools", "scales", "data.table"
-))
+install.packages(
+  c("shiny", "shinydashboard", "leaflet", "sf", "dplyr",
+    "htmltools", "scales", "data.table"),
+  repos = "https://cloud.r-project.org"
+)
 
 # sobe o app (usa dashboard/data/camadas.rds já commitado)
 shiny::runApp("dashboard")
@@ -29,6 +30,8 @@ Ou no terminal:
 ```bash
 Rscript -e 'shiny::runApp("dashboard", launch.browser = TRUE)'
 ```
+
+No macOS, o aviso de `R_X11.so` / XQuartz pode ser ignorado — o app roda no browser.
 
 Para regenerar as camadas após mudar dados de saída/EDA:
 

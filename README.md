@@ -6,16 +6,29 @@ acesso a empregos em ≤60 min divergem.
 
 ## Dashboard (v0) — como o time sobe
 
-Na raiz do repositório, com R ≥ 4.2:
+Na raiz do repositório, com R ≥ 4.2. Use o `repos=` para **não** cair no menu
+interativo de espelho CRAN:
 
 ```r
-install.packages(c(
-  "shiny", "shinydashboard", "leaflet", "sf", "dplyr",
-  "htmltools", "scales", "data.table"
-))
+install.packages(
+  c("shiny", "shinydashboard", "leaflet", "sf", "dplyr",
+    "htmltools", "scales", "data.table"),
+  repos = "https://cloud.r-project.org"
+)
 
+# na pasta do clone (onde está a pasta dashboard/)
 shiny::runApp("dashboard")
 ```
+
+No terminal (mesmo efeito):
+
+```bash
+Rscript -e 'install.packages(c("shiny","shinydashboard","leaflet","sf","dplyr","htmltools","scales","data.table"), repos="https://cloud.r-project.org")'
+Rscript -e 'shiny::runApp("dashboard", launch.browser=TRUE)'
+```
+
+Aviso de `R_X11.so` / `libSM.6.dylib` no macOS **pode ser ignorado** — o Shiny
+abre no navegador e não precisa do XQuartz.
 
 As camadas já estão em `dashboard/data/camadas.rds` — **não precisa** rodar o
 EDA para abrir o mapa. Para regenerar as camadas (depois de mudar dados):
