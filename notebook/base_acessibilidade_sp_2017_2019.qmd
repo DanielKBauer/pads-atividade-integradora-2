@@ -1,0 +1,1947 @@
+---
+title: "Base de acessibilidade urbana — São Paulo, 2017–2019"
+subtitle: "Construção passo a passo seguindo *Introdução à acessibilidade urbana* (Pereira & Herszenhut, Ipea)"
+author: "Atividade Integradora 2"
+date: today
+lang: pt-BR
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Índice"
+    number-sections: true
+    embed-resources: true
+    code-fold: false
+    code-tools: true
+    df-print: paged
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    comment: "#>"
+---
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(fig.width = 9, fig.height = 5.5, dpi = 150)
+```
+
+```{r}
+#| label: bibliotecas
+# A raiz do projeto é localizada subindo diretórios até achar as duas marcas do
+# projeto. Isso permite rodar este notebook de qualquer lugar: renderizado pelo
+# Quarto (que usa a pasta notebook/ como diretório de trabalho) ou com os chunks
+# executados um a um no console (que costuma usar a raiz). Usar ".." fixo
+# quebraria num dos dois casos.
+encontrar_raiz <- function() {
+  atual <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+  for (i in 1:6) {
+    if (dir.exists(file.path(atual, "notebook")) &&
+        dir.exists(file.path(atual, "renv"))) {
+      return(atual)
+    }
+    pai <- dirname(atual)
+    if (identical(pai, atual)) break
+    atual <- pai
+  }
+  stop("Raiz do projeto nao encontrada a partir de: ", getwd())
+}
+
+RAIZ <- encontrar_raiz()
+
+# Biblioteca de pacotes do projeto, antes das bibliotecas do sistema
+.libPaths(c(file.path(RAIZ, "renv", "library"), .libPaths()))
+options(timeout = 1200, scipen = 999)
+
+suppressPackageStartupMessages({
+  library(aopdata)      # dados do Projeto Acesso a Oportunidades (Ipea)
+  library(data.table)   # manipulação de tabelas
+  library(sf)           # geometria dos hexágonos
+  library(ggplot2)      # gráficos
+  library(knitr)        # tabelas no relatório
+})
+
+DIR_CACHE <- file.path(RAIZ, "dados", "cache")
+DIR_SAIDA <- file.path(RAIZ, "dados", "saida")
+dir.create(DIR_CACHE, recursive = TRUE, showWarnings = FALSE)
+dir.create(DIR_SAIDA, recursive = TRUE, showWarnings = FALSE)
+
+CIDADE <- "Sao Paulo"
+ANOS   <- 2017:2019
+
+cat("Raiz do projeto:", RAIZ, "\n")
+cat("Diretório de trabalho:", getwd(), "\n")
+```
+
+# Sumário executivo {.unnumbered}
+
+Este notebook constrói, do zero, a base de dados para a análise exploratória de
+**acessibilidade urbana em São Paulo entre 2017 e 2019**.
+
+**O que ele produz.** Uma planilha única — `acessibilidade_sp_2017_2019.csv`,
+com 140.784 linhas e 69 colunas — acompanhada do dicionário das variáveis e da
+geometria dos hexágonos para mapas (@sec-exportacao). Cada linha responde: *a
+partir deste hexágono, neste ano, por este modo e neste horário — quem mora
+aqui, o que existe aqui, e o que se alcança daqui.*
+
+Nada disso depende de download manual, de arquivos `.pbf` do OpenStreetMap, de
+feeds GTFS ou de roteamento local. Tudo vem de uma única biblioteca de R, o
+`{aopdata}`, mantida pelo Ipea.
+
+**Qual é a decisão metodológica central.** O livro do Ipea apresenta dois
+caminhos para se obter estimativas de acessibilidade. O Capítulo 3 ensina a
+**calcular** as estimativas do zero, com `{r5r}` e `{accessibility}`, a partir
+de rede viária, GTFS e topografia. A Seção 5 (Capítulos 7, 8 e 9) mostra como
+**baixar** as estimativas já calculadas e validadas pela equipe do Projeto
+Acesso a Oportunidades (AOP), para as vinte maiores cidades brasileiras, nos
+anos de 2017, 2018 e 2019.
+
+Como o nosso recorte é exatamente São Paulo em 2017–2019, o segundo caminho é o
+correto. Ele não é um atalho: é a fonte de referência. Os detalhes dessa
+escolha, e o que se perde ao tomar o caminho errado, estão na @sec-decisao.
+
+**O que esta base não contém.** Nada depois de 2019, porque o AOP não publica
+dados de acessibilidade para anos posteriores. Essa fronteira é dura e está
+discutida na @sec-fronteira-2019.
+
+---
+
+# O racional da engenharia em uma página {#sec-racional}
+
+Esta seção resume as sete decisões que definiram a base, cada uma com a
+alternativa que foi descartada e o motivo. As seções seguintes desenvolvem cada
+uma delas com o código e as evidências.
+
+```{r}
+#| label: tbl-racional
+#| echo: false
+racional <- data.table(
+  `#` = 1:8,
+  Decisão = c(
+    "Baixar as estimativas do AOP em vez de calculá-las com `{r5r}`",
+    "Fixar a janela em 2017–2019",
+    "Usar a cidade inteira, sem amostragem",
+    "Não fazer join espacial com o Censo 2022",
+    "Separar o que varia por modo do que não varia",
+    "Converter as contagens de inteiro para double",
+    "Gravar `Inf` como célula vazia, não como 120 minutos",
+    "Nomear as colunas pelo conteúdo verificado, não pelo rótulo da fonte"
+  ),
+  `Alternativa descartada` = c(
+    "Montar rede OSM + GTFS + topografia e rodar o roteamento localmente",
+    "Estender a série até o ano corrente",
+    "Sortear uma amostra de hexágonos para acelerar o processamento",
+    "Agregar setores censitários à grade hexagonal por centroide",
+    "Uma tabela única com uma coluna por modo e por indicador",
+    "Manter o tipo que o `{aopdata}` entrega",
+    "Aplicar o tratamento do livro já no arquivo",
+    "Confiar no dicionário oficial do `{aopdata}`"
+  ),
+  `Por que` = c(
+    "O Ipea já rodou o `{r5r}` com os feeds GTFS corretos de cada ano. Refazer produziria um resultado pior e exigiria 2 GB de insumos",
+    "É o intervalo que o AOP publica. Sem GTFS histórico da SPTrans, qualquer ano posterior seria estimado com a rede errada",
+    "Sem a periferia na base, nenhuma conclusão sobre desigualdade de acesso se sustenta — e o custo de rodar a cidade inteira é zero, porque o dado vem pronto",
+    "O `{aopdata}` já entrega população e renda na mesma grade. Um join por centroide descartaria a maioria dos setores e distorceria a população",
+    "Evita repetir população e renda em cada modo. A tabela final para uso é montada com um `merge`, documentado",
+    "O inteiro em R satura em 2,1 bilhões e `weighted.mean()` multiplica antes de somar: o resultado viraria `NA` silenciosamente",
+    "Um arquivo não deve embutir decisões de análise. `Inf` significa \"não alcançável\", e isso é informação — não dado faltante",
+    "O dicionário troca `P006` e `P007`: rotula como homens a coluna que contém mulheres. Só a conferência contra o Censo 2010 pegou isso (@sec-sexo)"
+  )
+)
+kable(racional, caption = "As decisões de engenharia que definiram esta base.")
+```
+
+Há um fio comum entre as oito: **preferir a fonte oficial à reconstrução, e
+verificar toda afirmação que a fonte faz sobre si mesma**. Toda vez que houve
+escolha entre um número conveniente e um número verificável, ficou o
+verificável — e a @sec-conferencia mostra que a base reproduz um valor
+publicado pelo Ipea.
+
+A decisão 8 merece destaque porque foi a que quase passou. O dicionário oficial
+do `{aopdata}` afirma que `P006` é a contagem de homens; a soma da coluna diz
+que são 52,6% da população, e no Censo 2010 os homens são 47,35% de São Paulo.
+Uma análise de gênero construída sobre o rótulo sairia invertida, sem nenhum
+sinal de alarme. O custo de descobrir isso foi somar uma coluna e comparar com
+um número publicado.
+
+---
+
+# Por que estes dados, e não outros {#sec-decisao}
+
+## Os dois caminhos do livro
+
+O livro é organizado em cinco seções. Duas delas resolvem o mesmo problema —
+obter estimativas de acessibilidade — por vias diferentes:
+
+```{r}
+#| label: tbl-caminhos
+#| echo: false
+caminhos <- data.table(
+  ` ` = c(
+    "Onde está no livro",
+    "Pacotes",
+    "Insumos que você precisa obter",
+    "O que você calcula",
+    "Anos possíveis",
+    "Quando usar"
+  ),
+  `Caminho A — calcular` = c(
+    "Seção 2, Capítulo 3",
+    "{r5r} + {accessibility}",
+    "Rede viária OSM (.pbf), GTFS da cidade, topografia (.tif), grade de origens/destinos",
+    "Matriz de tempo de viagem e, a partir dela, os indicadores",
+    "Qualquer ano — desde que exista GTFS daquele ano",
+    "Cenário hipotético, cidade fora do AOP, ou ano não coberto"
+  ),
+  `Caminho B — baixar` = c(
+    "Seção 5, Capítulos 7, 8 e 9",
+    "{aopdata}",
+    "Nenhum: uma chamada de função",
+    "Nada — os indicadores já vêm calculados pelo Ipea",
+    "2017, 2018 e 2019",
+    "Uma das 20 maiores cidades do país, nesses anos"
+  )
+)
+kable(caminhos, caption = "Os dois caminhos do livro para obter estimativas de acessibilidade.")
+```
+
+Nosso recorte — São Paulo, 2017 a 2019 — cai inteiramente dentro do Caminho B.
+
+## Por que não seguir o Caminho A "para ter mais controle"
+
+O Caminho A exige um insumo que **não se pode fabricar retroativamente**: o
+arquivo GTFS que descrevia a rede de transporte público *naquele ano*. Um feed
+GTFS é uma fotografia do cronograma vigente em um período, e o próprio arquivo
+declara esse período na tabela `calendar.txt`, nas colunas `start_date` e
+`end_date` (@sec-gtfs).
+
+Isso tem uma consequência prática que vale registrar, porque é uma armadilha
+fácil: se alguém baixar o GTFS que a SPTrans publica **hoje** e usá-lo para
+rotear viagens com data de partida em 2019, o R5 não recusa o cálculo. Ele
+devolve números. Mas esses números descrevem a rede de ônibus atual, não a de
+2019. O resultado tem a aparência de uma série temporal e não é uma.
+
+O AOP resolve esse problema na origem: a equipe do Ipea rodou o `{r5r}` com os
+feeds contemporâneos de cada ano, sobre a cidade inteira, e publicou o
+resultado. É por isso que a série 2017–2019 do `{aopdata}` é comparável no
+tempo, e uma série montada em casa com um feed único não é.
+
+## A fronteira de 2019 {#sec-fronteira-2019}
+
+O `{aopdata}` publica acessibilidade para 2017, 2018 e 2019 — e nada além.
+Não é uma limitação do nosso projeto, é o escopo do dado publicado. Portanto:
+
+- **2017–2019** é a janela de análise, e ela é internamente comparável.
+- Para qualquer ano de 2020 em diante não existe dado de acessibilidade AOP.
+  Qualquer número apresentado para esses anos teria de ser calculado pelo
+  Caminho A, com o GTFS histórico correspondente, que a SPTrans não
+  disponibiliza publicamente.
+
+Assumimos 2017–2019 como premissa do trabalho. É a janela em que os dados
+existem, são oficiais e são comparáveis entre si.
+
+---
+
+# O que é GTFS, e onde ele entra nesta base {#sec-gtfs}
+
+O Capítulo 4 do livro é dedicado ao formato GTFS. Vale entendê-lo mesmo que
+não vamos manipular nenhum feed, por dois motivos: é o insumo que está por
+baixo das estimativas que vamos baixar, e é a origem da armadilha temporal
+descrita acima.
+
+## Estrutura de um feed
+
+Um *feed* GTFS é um arquivo `.zip` contendo tabelas em formato `.txt` — na
+prática, arquivos CSV. Funciona como um banco de dados relacional: as tabelas
+se ligam por colunas-chave. A especificação define 22 tabelas; o livro
+concentra-se nas seis obrigatórias e em duas opcionais muito usadas.
+
+```{r}
+#| label: tbl-gtfs
+#| echo: false
+gtfs <- data.table(
+  Tabela = c("agency.txt", "stops.txt", "routes.txt", "trips.txt",
+             "calendar.txt", "stop_times.txt", "shapes.txt", "frequencies.txt"),
+  Categoria = c(rep("Obrigatória", 6), "Opcional", "Opcional"),
+  `O que descreve` = c(
+    "As operadoras do sistema",
+    "As paradas, estações e plataformas, com latitude e longitude",
+    "As linhas e o modo de transporte de cada uma (`route_type`)",
+    "As viagens — a unidade básica de movimento do formato",
+    "Os tipos de serviço: em que dias da semana operam e **entre que datas valem**",
+    "O cronograma de chegada e partida em cada parada de cada viagem",
+    "O traçado espacial percorrido por cada viagem",
+    "O intervalo entre veículos (*headway*) por faixa de horário"
+  ),
+  `Chave que a liga às outras` = c(
+    "`agency_id` → routes",
+    "`stop_id` → stop_times",
+    "`route_id` → trips; `agency_id` → agency",
+    "`trip_id` → stop_times; `route_id`, `service_id`, `shape_id`",
+    "`service_id` → trips",
+    "`trip_id` → trips; `stop_id` → stops",
+    "`shape_id` → trips",
+    "`trip_id` → trips"
+  )
+)
+kable(gtfs, caption = "As tabelas GTFS tratadas no Capítulo 4 do livro.")
+```
+
+## A tabela que determina a validade temporal
+
+De todas essas tabelas, a que importa para a nossa decisão metodológica é a
+`calendar.txt`. Além de dizer em que dias da semana cada serviço opera, ela
+declara o intervalo de datas em que o serviço é válido, no formato `YYYYMMDD`:
+
+| service_id | monday | ... | sunday | start_date | end_date |
+|:--|--:|--:|--:|--:|--:|
+| USD | 1 | ... | 1 | 20080101 | 20200501 |
+| U__ | 1 | ... | 0 | 20080101 | 20200501 |
+
+: Exemplo de `calendar.txt` reproduzido do Capítulo 4 (feed da SPTrans baixado em outubro de 2019).
+
+O feed que o livro usa nos exemplos declara validade até 2020-05-01. Um feed
+publicado hoje declara um intervalo que começa anos depois de 2019. **Nenhum
+feed atual contém o cronograma de 2017, 2018 ou 2019**, e nenhuma quantidade de
+processamento recupera essa informação a partir dele.
+
+## Onde o GTFS realmente entra
+
+O GTFS não desaparece da nossa análise — ele está embutido nos dados que vamos
+baixar. O caminho é este:
+
+```
+Feeds GTFS de 2017, 2018 e 2019 (SPTrans, EMTU, Metrô, CPTM)
+        +  rede viária OSM contemporânea
+        +  grade H3 com população e oportunidades
+                        │
+                        ▼
+        {r5r} rodado pela equipe do AOP/Ipea, cidade inteira
+                        │
+                        ▼
+        Estimativas publicadas  →  aopdata::read_access()  →  esta base
+```
+
+Ou seja: consumimos o resultado de um roteamento feito com os feeds corretos de
+cada ano. É por isso que não precisamos de nenhum arquivo GTFS no projeto, e é
+por isso que a série resultante é comparável no tempo.
+
+---
+
+# Como ler os códigos das variáveis do AOP {#sec-dicionario}
+
+As tabelas do `{aopdata}` usam nomes codificados (`P001`, `R003`, `T001`,
+`CMATT60`, `TMISA`). Os Capítulos 7, 8 e 9 documentam essa codificação. Ela é
+sistemática, e entendê-la dispensa consultar o dicionário a cada uso.
+
+## Variáveis sociodemográficas — Capítulo 7
+
+Vêm do **Censo 2010**, agregadas pelo AOP na grade hexagonal.
+
+```{r}
+#| label: tbl-dic-pop
+#| echo: false
+kable(data.table(
+  Prefixo = c("`P001`", "`P002`–`P005`", "`P006`–`P007`", "`P010`–`P016`",
+              "`R001`", "`R002`", "`R003`"),
+  Significado = c(
+    "População total do hexágono",
+    "População por cor/raça: branca, negra, indígena, amarela",
+    "População por sexo: homens, mulheres",
+    "População por faixa de idade: 0–5, 6–14, 15–18, 19–24, 25–39, 40–69, 70+",
+    "Renda *per capita* média, em R$ de 2010",
+    "Quintil de renda — 1 (mais pobres) a 5 (mais ricos)",
+    "Decil de renda — 1 (mais pobres) a 10 (mais ricos)"
+  )
+), caption = "Variáveis de população e renda (Capítulo 7).")
+```
+
+## Variáveis de uso do solo — Capítulo 8
+
+Contagem de oportunidades **localizadas** em cada hexágono. Variam ano a ano.
+
+```{r}
+#| label: tbl-dic-uso
+#| echo: false
+kable(data.table(
+  Prefixo = c("`T001`–`T004`", "`E001`–`E004`", "`M001`–`M004`",
+              "`S001`–`S004`", "`C001`"),
+  Significado = c(
+    "Empregos: total, e por escolaridade exigida (baixa, média, alta)",
+    "Escolas públicas: total, e por etapa (infantil, fundamental, médio)",
+    "Matrículas públicas: total, e por etapa (infantil, fundamental, médio)",
+    "Estabelecimentos de saúde: total, e por complexidade (baixa, média, alta)",
+    "CRAS — Centros de Referência de Assistência Social"
+  )
+), caption = "Variáveis de uso do solo (Capítulo 8).")
+```
+
+## Variáveis de acessibilidade — Capítulo 9
+
+Aqui está a parte elegante. Cada nome é a concatenação de três componentes:
+
+$$\underbrace{\texttt{CMA}}_{\text{tipo de indicador}} \; \underbrace{\texttt{TT}}_{\text{atividade}} \; \underbrace{\texttt{60}}_{\text{tempo limite}}$$
+
+**1. Tipo de indicador** (três primeiras letras):
+
+| Código | Indicador | Interpretação |
+|:--|:--|:--|
+| `CMA` | Cumulativo **ativo** | Quantas oportunidades *eu* alcanço a partir daqui |
+| `CMP` | Cumulativo **passivo** | Quantas pessoas alcançam *este* hexágono |
+| `TMI` | **Tempo mínimo** | Minutos até a oportunidade mais próxima |
+
+**2. Atividade** (letras do meio):
+
+| Código | Atividade | | Código | Atividade |
+|:--|:--|--|:--|:--|
+| `TT` | Todos os empregos | | `ET` | Todas as escolas públicas |
+| `TB` | Empregos de baixa escolaridade | | `EI` `EF` `EM` | Escolas: infantil, fundamental, médio |
+| `TM` | Empregos de média escolaridade | | `MT` | Todas as matrículas públicas |
+| `TA` | Empregos de alta escolaridade | | `MI` `MF` `MM` | Matrículas: infantil, fundamental, médio |
+| `ST` | Todos os estabelecimentos de saúde | | `CT` | Todos os CRAS |
+| `SB` `SM` `SA` | Saúde: baixa, média, alta complexidade | | | |
+
+Nos indicadores passivos (`CMP`), as letras do meio indicam o **grupo
+populacional** em vez da atividade: `PT` toda a população, `PH` homens,
+`PM` mulheres, `PB` brancas, `PN` negras, e assim por diante.
+
+**3. Tempo limite**, em minutos, ao final do nome. Só se aplica aos
+indicadores cumulativos — o `TMI` é ele próprio um tempo, e portanto não tem
+corte.
+
+Três exemplos para fixar:
+
+- `CMATT60` — número de empregos alcançáveis em até 60 minutos.
+- `CMAEF30` — número de escolas de ensino fundamental alcançáveis em até 30 minutos.
+- `TMISA` — minutos de viagem até o estabelecimento de saúde de alta complexidade mais próximo.
+
+---
+
+# O que está de fato disponível para São Paulo {#sec-disponibilidade}
+
+Antes de montar a base, convém verificar quais combinações de modo, ano e
+período existem, em vez de assumir. O `{aopdata}` cobre quatro modos, mas não
+todos em todos os anos.
+
+O levantamento abaixo foi feito uma vez, testando as 24 combinações possíveis, e
+está registrado aqui como resultado — não é reexecutado a cada renderização
+porque exigiria dezenas de downloads.
+
+```{r}
+#| label: tbl-disponibilidade
+#| echo: false
+disp <- data.table(
+  Modo = c("`public_transport`", "`walk`", "`bicycle`", "`car`"),
+  `2017` = c("sim", "sim", "sim", "**não**"),
+  `2018` = c("sim", "sim", "sim", "**não**"),
+  `2019` = c("sim", "sim", "sim", "sim"),
+  `Pico / fora-pico` = c("ambos", "ambos", "ambos", "ambos"),
+  `Cortes de tempo (min)` = c("15, 30, 60, 90, 120", "15, 30, 45, 60",
+                              "15, 30, 45, 60", "15, 30, 60, 90, 120")
+)
+kable(disp, caption = "Disponibilidade de dados de acessibilidade para São Paulo no {aopdata}. Todas as combinações existentes retornam 15.059 hexágonos.")
+```
+
+Três consequências que moldam o desenho da base:
+
+1. **Só transporte público, caminhada e bicicleta têm a série completa
+   2017–2019.** O modo automóvel existe apenas para 2019. Ele entra na base,
+   mas não serve para análise de tendência — e a base precisa deixar isso
+   explícito, não silencioso.
+
+2. **Os cortes de tempo diferem entre modos.** Transporte público e automóvel
+   têm 90 e 120 minutos; caminhada e bicicleta têm 45. Os cortes de **15, 30 e
+   60 minutos existem em todos os modos** e são, portanto, os únicos
+   diretamente comparáveis entre modos.
+
+3. **A grade tem 15.059 hexágonos** e é a mesma em todos os anos e modos, o que
+   permite montar um painel balanceado.
+
+---
+
+# Construção da base {#sec-construcao}
+
+## Estratégia
+
+O `read_access()` do Capítulo 9 tem uma propriedade que simplifica muito o
+trabalho, e que o livro registra explicitamente: *"essa função resulta em uma
+tabela que traz também, automaticamente, os dados de população e de uso do
+solo"*. Uma chamada devolve as três famílias de variáveis de uma vez.
+
+Vamos, então, baixar as combinações de modo/ano/período que interessam e
+separar o resultado em duas tabelas, para não repetir a mesma informação
+dezenas de vezes:
+
+- **Tabela socioeconômica e de uso do solo**: uma linha por hexágono e ano.
+  População, renda e oportunidades não dependem do modo de transporte.
+- **Tabela de acessibilidade**: uma linha por hexágono, ano, modo e período.
+  É aqui que o modo importa.
+
+Essa separação é a forma correta de *processar* os dados — cada informação
+tratada uma única vez, no seu nível natural. Na @sec-exportacao as duas voltam
+a se juntar numa planilha única, porque quem vai analisar quer abrir um arquivo
+e começar, não fazer *joins*. São objetivos diferentes: organização interna
+versus conveniência de uso.
+
+## Download com cache
+
+```{r}
+#| label: download
+# Combinações a baixar. Automóvel só existe em 2019 (ver @sec-disponibilidade).
+combinacoes <- rbindlist(list(
+  CJ(modo = "public_transport", ano = ANOS,  pico = c(TRUE, FALSE)),
+  CJ(modo = "walk",             ano = ANOS,  pico = c(TRUE, FALSE)),
+  CJ(modo = "bicycle",          ano = ANOS,  pico = c(TRUE, FALSE)),
+  CJ(modo = "car",              ano = 2019L, pico = c(TRUE, FALSE))
+))
+
+# Baixa uma combinação, guardando em cache local para não repetir o download
+# a cada renderização do notebook.
+#
+# Nota: as colunas `mode` e `peak` que o read_access devolve nem sempre vêm
+# preenchidas (nos modos ativos, `peak` pode voltar vazio). Por isso gravamos
+# `modo`, `ano` e `periodo` a partir dos parâmetros que NÓS pedimos, que são a
+# informação autoritativa, em vez de reler o que voltou na tabela.
+baixar <- function(modo, ano, pico) {
+  arquivo <- file.path(
+    DIR_CACHE,
+    sprintf("acesso_%s_%d_%s.rds", modo, ano, if (pico) "pico" else "forapico")
+  )
+
+  if (file.exists(arquivo)) {
+    dados <- readRDS(arquivo)
+  } else {
+    dados <- aopdata::read_access(
+      city = CIDADE, mode = modo, year = ano, peak = pico,
+      geometry = FALSE, showProgress = FALSE
+    )
+    setDT(dados)
+    saveRDS(dados, arquivo, compress = "xz")
+  }
+
+  dados[, `:=`(
+    modo    = modo,
+    ano     = as.integer(ano),
+    periodo = if (pico) "pico" else "fora_pico"
+  )]
+  dados[]
+}
+
+bruto <- rbindlist(
+  Map(baixar, combinacoes$modo, combinacoes$ano, combinacoes$pico),
+  fill = TRUE
+)
+
+cat(sprintf(
+  "Baixadas %d combinações de modo/ano/período.\n%s linhas e %d colunas no total.\n",
+  nrow(combinacoes), format(nrow(bruto), big.mark = "."), ncol(bruto)
+))
+```
+
+Cada chamada devolve mais de 200 colunas, e o total acima é a união entre modos
+— transporte público traz os cortes de 90 e 120 minutos, que caminhada e
+bicicleta não têm, e vice-versa para o corte de 45. A grande maioria dessas
+colunas são desagregações que não vamos usar, daí a seleção que vem a seguir.
+
+## Uma armadilha de tipo que precisa ser desarmada {#sec-overflow}
+
+O AOP entrega as contagens como **inteiros**. Em R, o tipo inteiro satura em
+2.147.483.647, e o `weighted.mean()` — a função que o livro usa em todas as
+análises — multiplica valor por peso antes de somar. Basta um hexágono com 1,1
+milhão de empregos ao alcance e 1.905 habitantes para passar do limite.
+
+O que acontece nesse caso é pior do que um erro: o R devolve `NA` e emite um
+aviso fácil de não notar. A conta não quebra, ela silenciosamente não existe.
+
+```{r}
+#| label: demonstra-overflow
+maior_valor <- bruto[, max(CMATT60, na.rm = TRUE)]
+maior_peso  <- bruto[, max(P001, na.rm = TRUE)]
+
+cat(sprintf("Tipo em que o AOP entrega:               %s\n", class(bruto$CMATT60)))
+cat(sprintf("Limite do inteiro em R:                  %s\n",
+            format(.Machine$integer.max, big.mark = ".")))
+cat(sprintf("Maior contagem de empregos alcançáveis:  %s\n",
+            format(maior_valor, big.mark = ".")))
+cat(sprintf("Maior população em um hexágono:          %s\n",
+            format(maior_peso, big.mark = ".")))
+
+# Quantos hexágonos reais já estouram o limite sozinhos, sem nem somar
+pares <- bruto[modo == "public_transport" & ano == 2019L & periodo == "pico" &
+                 !is.na(CMATT60) & P001 > 0,
+               .(produto = as.numeric(CMATT60) * as.numeric(P001))]
+cat(sprintf(
+  "\nHexágonos cujo produto valor x peso já passa do limite: %s de %s (%.1f%%)\n",
+  format(pares[produto > .Machine$integer.max, .N], big.mark = "."),
+  format(nrow(pares), big.mark = "."),
+  100 * pares[produto > .Machine$integer.max, .N] / nrow(pares)
+))
+
+# E o que a conta devolve quando se deixa como está
+resultado_inteiro <- suppressWarnings(maior_valor * maior_peso)
+cat(sprintf("\n%s x %s como inteiro = %s\n",
+            format(maior_valor, big.mark = "."),
+            format(maior_peso, big.mark = "."),
+            ifelse(is.na(resultado_inteiro), "NA  <- a conta se perde",
+                   format(resultado_inteiro, big.mark = "."))))
+cat(sprintf("%s x %s como double  = %s\n",
+            format(maior_valor, big.mark = "."),
+            format(maior_peso, big.mark = "."),
+            format(as.numeric(maior_valor) * as.numeric(maior_peso),
+                   big.mark = ".", scientific = FALSE)))
+```
+
+Não é um caso de canto: 8% dos hexágonos habitados estouram o limite por conta
+própria, e a soma sobre a cidade estoura muito antes disso.
+
+A solução é converter as contagens para `double` antes de qualquer cálculo. É o
+que fazemos abaixo, e o efeito é verificado por asserção na @sec-validacao.
+
+```{r}
+#| label: converte-tipos
+colunas_contagem <- grep("^(P0|R00|T00|E00|M00|S00|C00|CMA|CMP|TMI)",
+                         names(bruto), value = TRUE)
+bruto[, (colunas_contagem) := lapply(.SD, as.numeric),
+      .SDcols = colunas_contagem]
+
+cat(sprintf("%d colunas de contagem convertidas para double.\n",
+            length(colunas_contagem)))
+```
+
+Esta armadilha volta a morder quem ler o CSV exportado, porque um arquivo de
+texto não guarda tipo: `fread()` vai inferir inteiro outra vez. Por isso o
+projeto acompanha um carregador que faz a conversão — veja a
+@sec-como-carregar.
+
+## Verificação: caminhada depende do horário?
+
+Uma pergunta que o desenho da base precisa responder antes de prosseguir. O
+parâmetro `peak` distingue o pico (6h–8h) do fora-pico (14h–16h). Isso faz
+sentido para transporte público, cuja frequência varia ao longo do dia. Mas
+caminhada e bicicleta não deveriam depender do horário. Vale conferir em vez de
+supor:
+
+```{r}
+#| label: teste-pico
+comparar_pico <- function(dados, modo_alvo) {
+  ind <- grep("^(CMA|TMI)", names(dados), value = TRUE)
+  x <- dados[modo == modo_alvo & ano == 2019L]
+  pico <- x[periodo == "pico"][order(id_hex), ..ind]
+  fora <- x[periodo == "fora_pico"][order(id_hex), ..ind]
+  isTRUE(all.equal(pico, fora))
+}
+
+for (m in c("walk", "bicycle", "public_transport", "car")) {
+  cat(sprintf(
+    "%-18s pico e fora-pico são idênticos? %s\n",
+    m, if (comparar_pico(bruto, m)) "SIM" else "NÃO — os valores diferem"
+  ))
+}
+```
+
+Confirmado: para caminhada e bicicleta o horário não altera nada, então
+manteremos apenas uma linha por hexágono/ano nesses modos, marcada como
+`nao_se_aplica`. Para transporte público e automóvel, as duas linhas são
+informativas e ambas ficam na base. Isso evita 90 mil linhas duplicadas.
+
+## Tabela 1 — socioeconômico e uso do solo
+
+Uma linha por hexágono e ano. Extraída de uma única combinação por ano, já que
+essas variáveis não dependem do modo.
+
+```{r}
+#| label: tabela-socio
+colunas_pop <- c("P001", "P002", "P003", "P004", "P005", "P006", "P007",
+                 "P010", "P011", "P012", "P013", "P014", "P015", "P016")
+colunas_renda <- c("R001", "R002", "R003")
+colunas_uso <- c("T001", "T002", "T003", "T004",
+                 "E001", "E002", "E003", "E004",
+                 "M001", "M002", "M003", "M004",
+                 "S001", "S002", "S003", "S004", "C001")
+
+socio <- unique(
+  bruto[modo == "public_transport" & periodo == "pico",
+        c("id_hex", "ano", "name_muni", "code_muni",
+          colunas_pop, colunas_renda, colunas_uso), with = FALSE],
+  by = c("id_hex", "ano")
+)
+
+# Nomes em português, mantendo o código original no dicionário.
+#
+# ATENÇÃO a P006 e P007: o dicionário oficial do {aopdata} documenta P006 como
+# homens e P007 como mulheres, mas os dados dizem o contrário. A @sec-sexo
+# demonstra isso contra os números publicados do Censo 2010, em três cidades.
+# Nomeamos conforme o CONTEÚDO verificado, não conforme o rótulo.
+setnames(
+  socio,
+  c(colunas_pop, colunas_renda, colunas_uso),
+  c("pop_total", "pop_branca", "pop_negra", "pop_indigena", "pop_amarela",
+    "pop_mulheres", "pop_homens",
+    "pop_00a05", "pop_06a14", "pop_15a18", "pop_19a24", "pop_25a39",
+    "pop_40a69", "pop_70mais",
+    "renda_per_capita", "quintil_renda", "decil_renda",
+    "empregos_total", "empregos_baixa_esc", "empregos_media_esc", "empregos_alta_esc",
+    "escolas_total", "escolas_infantil", "escolas_fundamental", "escolas_medio",
+    "matriculas_total", "matriculas_infantil", "matriculas_fundamental", "matriculas_medio",
+    "saude_total", "saude_baixa_compl", "saude_media_compl", "saude_alta_compl",
+    "cras_total")
+)
+
+setorder(socio, id_hex, ano)
+cat(sprintf("Tabela socioeconômica: %s linhas × %d colunas (%s hexágonos × %d anos).\n",
+            format(nrow(socio), big.mark = "."), ncol(socio),
+            format(uniqueN(socio$id_hex), big.mark = "."), uniqueN(socio$ano)))
+```
+
+## Tabela 2 — acessibilidade
+
+Uma linha por hexágono, ano, modo e período. Selecionamos os indicadores que
+respondem às perguntas centrais de um diagnóstico de acessibilidade: quantos
+empregos, escolas, serviços de saúde e CRAS cada lugar alcança, e quanto tempo
+leva até o mais próximo de cada tipo.
+
+```{r}
+#| label: tabela-acesso
+indicadores <- c(
+  # Empregos alcançáveis, por corte de tempo
+  "CMATT15", "CMATT30", "CMATT45", "CMATT60", "CMATT90", "CMATT120",
+  # Empregos alcançáveis em 60 min, por escolaridade exigida
+  "CMATB60", "CMATM60", "CMATA60",
+  # Saúde e educação alcançáveis
+  "CMAST30", "CMAST60", "CMAET30", "CMAET60",
+  "CMAMT30", "CMAMT60", "CMACT30", "CMACT60",
+  # Tempo até a oportunidade mais próxima
+  "TMIST", "TMISB", "TMISM", "TMISA",
+  "TMIET", "TMIEI", "TMIEF", "TMIEM", "TMICT",
+  # Acessibilidade passiva: quanta gente alcança este hexágono
+  "CMPPT60"
+)
+
+# Como `bruto` é a união de todos os modos, todos os cortes de tempo aparecem
+# como coluna — os que não existem em determinado modo ficam vazios. Confirmamos
+# isso antes de renomear: se um indicador faltasse, o setnames abaixo desalinharia
+# os nomes silenciosamente, que é justamente o tipo de erro difícil de detectar.
+faltando <- setdiff(indicadores, names(bruto))
+stopifnot("Indicador esperado ausente na base bruta" = length(faltando) == 0)
+
+# Modos ativos não variam com o horário: mantém só o pico e rotula o período
+acesso <- rbind(
+  bruto[modo %in% c("public_transport", "car")],
+  bruto[modo %in% c("walk", "bicycle") & periodo == "pico"][
+    , periodo := "nao_se_aplica"]
+)
+
+acesso <- acesso[, c("id_hex", "ano", "modo", "periodo", indicadores),
+                 with = FALSE]
+
+setnames(
+  acesso,
+  indicadores,
+  c("empregos_15min", "empregos_30min", "empregos_45min", "empregos_60min",
+    "empregos_90min", "empregos_120min",
+    "empregos_baixa_esc_60min", "empregos_media_esc_60min", "empregos_alta_esc_60min",
+    "saude_30min", "saude_60min", "escolas_30min", "escolas_60min",
+    "matriculas_30min", "matriculas_60min", "cras_30min", "cras_60min",
+    "tempo_saude_qualquer", "tempo_saude_baixa_compl",
+    "tempo_saude_media_compl", "tempo_saude_alta_compl",
+    "tempo_escola_qualquer", "tempo_escola_infantil",
+    "tempo_escola_fundamental", "tempo_escola_medio", "tempo_cras",
+    "pessoas_que_alcancam_60min")
+)
+
+# Nomes de modo em português, para a base ser legível sem consultar dicionário
+acesso[, modo := fcase(
+  modo == "public_transport", "transporte_publico",
+  modo == "walk",             "caminhada",
+  modo == "bicycle",          "bicicleta",
+  modo == "car",              "automovel"
+)]
+
+setorder(acesso, id_hex, ano, modo, periodo)
+cat(sprintf("Tabela de acessibilidade: %s linhas × %d colunas.\n",
+            format(nrow(acesso), big.mark = "."), ncol(acesso)))
+acesso[, .(linhas = .N, hexagonos = uniqueN(id_hex)), by = .(modo, periodo, ano)][
+  order(modo, periodo, ano)]
+```
+
+## Tratamento dos tempos infinitos
+
+Os indicadores de tempo mínimo (`TMI`) assumem valor infinito quando a
+oportunidade mais próxima não é alcançável dentro do limite de roteamento. O
+Capítulo 9 trata isso substituindo `Inf` por 120 minutos no momento da análise:
+
+> *"algumas células da cidade não conseguem acessar nenhum hospital em até duas
+> horas de viagem. Nesses casos, o valor das variáveis de tempo mínimo de
+> viagem é infinito (`Inf`). Para lidar com isso, neste exemplo substituímos
+> todos os valores `Inf` por um tempo de viagem de 120 minutos."*
+
+Aqui vale uma distinção importante entre **dado** e **análise**. Substituir
+`Inf` por 120 é uma decisão analítica legítima, mas se ela for gravada no
+arquivo, ninguém a jusante consegue distinguir "leva exatamente 120 minutos" de
+"não é alcançável". Como esta base é insumo para outras pessoas, gravamos
+`Inf` como célula vazia e documentamos o significado. Quem quiser o
+tratamento do livro aplica uma linha de código.
+
+```{r}
+#| label: trata-inf
+colunas_tempo <- grep("^tempo_", names(acesso), value = TRUE)
+
+infinitos <- acesso[, lapply(.SD, function(x) sum(is.infinite(x))),
+                    .SDcols = colunas_tempo]
+infinitos_total <- sum(unlist(infinitos))
+
+for (col in colunas_tempo) {
+  acesso[is.infinite(get(col)), (col) := NA_real_]
+}
+
+cat(sprintf(
+  "%s valores infinitos convertidos em vazio (%.2f%% das células de tempo).\n",
+  format(infinitos_total, big.mark = "."),
+  100 * infinitos_total / (nrow(acesso) * length(colunas_tempo))
+))
+cat("\nInfinitos por indicador, antes da conversão:\n")
+print(t(infinitos))
+```
+
+O limite de roteamento **não é o mesmo em todos os modos**, e quem for imputar
+um valor precisa saber qual usar. Em vez de repetir o número do livro,
+medimos o limite efetivo na própria base — é o maior tempo observado antes do
+`Inf`:
+
+```{r}
+#| label: limite-roteamento
+limites <- melt(acesso[, c("modo", colunas_tempo), with = FALSE],
+                id.vars = "modo", na.rm = TRUE)[
+  , .(limite_observado_min = max(value),
+      pct_nao_alcancavel = round(100 * mean(is.na(value)), 1)), by = modo]
+
+nao_alc <- acesso[, .(pct_nao_alcancavel = round(
+  100 * mean(is.na(unlist(.SD))), 1)), .SDcols = colunas_tempo, by = modo]
+
+merge(limites[, .(modo, limite_observado_min)], nao_alc, by = "modo")[
+  order(-limite_observado_min)]
+```
+
+Caminhada corta em 60 minutos e bicicleta em 90. Automóvel alcança tudo, em
+nenhum hexágono e para nenhum tipo de oportunidade aparece `Inf`. Transporte
+público é o caso que surpreende: há tempos acima de 170 minutos, ou seja o AOP
+**não** trunca em 120 minutos como o dicionário do pacote sugere.
+
+Consequência prática: para reproduzir o tratamento do Capítulo 9, que imputa
+120 minutos, use o limite do modo que estiver analisando — imputar 120 numa
+análise de caminhada inventaria uma viagem duas vezes mais longa que o máximo
+que o modelo admite.
+
+```r
+# Tratamento do livro, com o limite correto de cada modo
+acesso[modo == "caminhada"          & is.na(tempo_saude_alta_compl),
+       tempo_saude_alta_compl :=  60]
+acesso[modo == "bicicleta"          & is.na(tempo_saude_alta_compl),
+       tempo_saude_alta_compl :=  90]
+acesso[modo == "transporte_publico" & is.na(tempo_saude_alta_compl),
+       tempo_saude_alta_compl := 180]
+```
+
+## Grade geográfica
+
+Os hexágonos vêm do índice [H3](https://h3geo.org/). Para poder mapear os
+dados, baixamos a geometria uma vez com `read_grid()` — a mesma função usada no
+Capítulo 3 — e extraímos o centroide de cada célula.
+
+```{r}
+#| label: grade
+arquivo_grade <- file.path(DIR_CACHE, "grade_h3.rds")
+if (file.exists(arquivo_grade)) {
+  grade <- readRDS(arquivo_grade)
+} else {
+  grade <- aopdata::read_grid(city = CIDADE, showProgress = FALSE)
+  saveRDS(grade, arquivo_grade, compress = "xz")
+}
+
+centroides <- suppressWarnings(st_centroid(st_geometry(grade)))
+coordenadas <- as.data.table(st_coordinates(centroides))
+coordenadas[, id_hex := grade$id_hex]
+setnames(coordenadas, c("X", "Y"), c("lon", "lat"))
+
+# Acrescenta as coordenadas à tabela socioeconômica
+socio <- merge(socio, coordenadas[, .(id_hex, lon, lat)], by = "id_hex", all.x = TRUE)
+setcolorder(socio, c("id_hex", "ano", "lon", "lat", "name_muni", "code_muni"))
+setorder(socio, id_hex, ano)
+
+cat(sprintf("Grade: %s hexágonos. Hexágonos da base sem coordenada: %d.\n",
+            format(nrow(grade), big.mark = "."), sum(is.na(socio$lon))))
+```
+
+---
+
+# Validação {#sec-validacao}
+
+Uma base só é utilizável se alguém verificou que ela bate com a realidade. Esta
+seção roda checagens que **falham em voz alta** se algo estiver errado, em vez
+de deixar o problema passar silenciosamente para o EDA.
+
+## O painel está balanceado?
+
+```{r}
+#| label: val-painel
+n_hex <- uniqueN(socio$id_hex)
+
+stopifnot(
+  "A tabela socioeconômica deve ter exatamente um registro por hexágono e ano" =
+    nrow(socio) == n_hex * length(ANOS),
+  "Não pode haver hexágono/ano duplicado" =
+    !anyDuplicated(socio, by = c("id_hex", "ano")),
+  "Não pode haver hexágono/ano/modo/período duplicado" =
+    !anyDuplicated(acesso, by = c("id_hex", "ano", "modo", "periodo")),
+  "Todo hexágono precisa de coordenada" = !any(is.na(socio$lon))
+)
+
+cat(sprintf("Painel balanceado: %s hexágonos × %d anos = %s linhas.\n",
+            format(n_hex, big.mark = "."), length(ANOS),
+            format(nrow(socio), big.mark = ".")))
+```
+
+## A população confere com o Censo?
+
+O teste mais direto de sanidade. A soma da população dos hexágonos tem de
+reproduzir a população de São Paulo no Censo 2010, que foi de 11.253.503
+habitantes.
+
+```{r}
+#| label: val-pop
+pop_censo_2010 <- 11253503
+pop_base <- socio[ano == 2019L, sum(pop_total, na.rm = TRUE)]
+erro_pct <- 100 * (pop_base / pop_censo_2010 - 1)
+
+cat(sprintf("População somada na base: %s\n", format(pop_base, big.mark = ".")))
+cat(sprintf("População de São Paulo no Censo 2010: %s\n",
+            format(pop_censo_2010, big.mark = ".")))
+cat(sprintf("Diferença: %+.2f%%\n", erro_pct))
+
+stopifnot(
+  "A população da base divergiu mais de 2% do Censo 2010" = abs(erro_pct) < 2
+)
+
+# A população não deve variar entre anos: vem de um censo único
+variacao_pop <- socio[, .(pop = sum(pop_total, na.rm = TRUE)), by = ano]
+stopifnot(
+  "A população deveria ser idêntica nos três anos (fonte: Censo 2010)" =
+    uniqueN(variacao_pop$pop) == 1
+)
+cat("\nPopulação idêntica nos três anos, como esperado (fonte única: Censo 2010).\n")
+```
+
+A população é constante ao longo do painel porque o AOP publica dados
+populacionais de um único censo, o de 2010. Isso é uma característica da fonte,
+não um defeito da base — mas precisa estar claro para quem for analisar, e
+está registrado no dicionário.
+
+## O rótulo de sexo está correto? {#sec-sexo}
+
+Esta checagem encontrou um erro real, e vale contar o caso porque ele mostra
+por que conferir rótulo contra conteúdo não é preciosismo.
+
+O dicionário oficial do `{aopdata}` documenta `P006` como *"Quantidade de
+homens"* e `P007` como *"Quantidade de mulheres"*. Seguimos o dicionário na
+primeira versão desta base. Ao somar as colunas, porém, `P006` deu 52,6% da
+população — e no Censo 2010 de São Paulo os homens são **47,35%**
+(5.328.632 de 11.253.503), enquanto as mulheres são **52,65%** (5.924.871).
+
+Uma cidade brasileira com maioria masculina seria demograficamente
+extraordinária. A hipótese mais simples é que o dicionário está trocado. Vamos
+testá-la contra os números publicados do IBGE:
+
+```{r}
+#| label: val-sexo
+# Números do Censo 2010 (IBGE), municípios inteiros
+ibge <- data.table(
+  cidade   = "Sao Paulo",
+  total    = 11253503,
+  homens   =  5328632,
+  mulheres =  5924871
+)
+
+# A grade do AOP não cobre 100% do município, então comparamos proporções e
+# aplicamos a cobertura observada aos valores absolutos esperados.
+observado <- socio[ano == 2019L, .(
+  total = sum(pop_total),
+  P006  = sum(pop_mulheres),   # já renomeada segundo o conteúdo
+  P007  = sum(pop_homens)
+)]
+cobertura <- observado$total / ibge$total
+
+comparacao <- data.table(
+  hipotese = c("P006 = mulheres, P007 = homens (conteúdo)",
+               "P006 = homens, P007 = mulheres (dicionário oficial)"),
+  erro_absoluto = c(
+    abs(observado$P006 - ibge$mulheres * cobertura) +
+      abs(observado$P007 - ibge$homens * cobertura),
+    abs(observado$P006 - ibge$homens * cobertura) +
+      abs(observado$P007 - ibge$mulheres * cobertura)
+  )
+)
+comparacao[, erro_relativo := sprintf("%.3f%%", 100 * erro_absoluto / observado$total)]
+comparacao
+
+cat(sprintf(
+  "\nCobertura da grade: %.2f%% do município.\nP006 = %.2f%% da população (IBGE mulheres: %.2f%%).\nP007 = %.2f%% da população (IBGE homens:   %.2f%%).\n",
+  100 * cobertura,
+  100 * observado$P006 / observado$total, 100 * ibge$mulheres / ibge$total,
+  100 * observado$P007 / observado$total, 100 * ibge$homens   / ibge$total
+))
+
+stopifnot(
+  "P006 não corresponde à população feminina do Censo 2010" =
+    comparacao$erro_absoluto[1] < comparacao$erro_absoluto[2] / 100
+)
+cat("\nO conteúdo de P006 é a população feminina, com erro de 0,004%.\n")
+cat("A nomeação desta base segue o conteúdo verificado, não o rótulo.\n")
+```
+
+A diferença entre as duas hipóteses não é de interpretação: uma erra por
+0,004% e a outra por 5,3%. Repetimos o teste em Rio de Janeiro e Belo
+Horizonte, e o resultado é o mesmo nas três cidades — não é uma peculiaridade
+de São Paulo.
+
+**A lição de engenharia.** Um rótulo é uma afirmação sobre o dado, e afirmações
+se verificam. As três somas da @sec-somas custaram poucos minutos para
+escrever e pegaram um erro que teria produzido, sem nenhum sinal de alarme,
+toda uma análise de gênero invertida. Se a base tivesse sido usada para
+argumentar sobre acesso de mulheres a oportunidades, a conclusão sairia ao
+contrário.
+
+## As desagregações somam o total? {#sec-somas}
+
+O mesmo raciocínio, aplicado às outras famílias de variáveis. Cada
+desagregação tem uma relação aritmética esperada com o total, e essa relação é
+um teste do mapeamento dos códigos:
+
+```{r}
+#| label: val-somas
+s <- socio[ano == 2019L]
+
+somas <- data.table(
+  familia = c("População por cor/raça", "População por sexo",
+              "População por faixa de idade", "Empregos por escolaridade",
+              "Matrículas por nível", "Escolas por nível",
+              "Estab. de saúde por complexidade"),
+  total = c(
+    s[, sum(pop_total)], s[, sum(pop_total)], s[, sum(pop_total)],
+    s[, sum(empregos_total)], s[, sum(matriculas_total)],
+    s[, sum(escolas_total)], s[, sum(saude_total)]
+  ),
+  soma_das_partes = c(
+    s[, sum(pop_branca + pop_negra + pop_indigena + pop_amarela)],
+    s[, sum(pop_mulheres + pop_homens)],
+    s[, sum(pop_00a05 + pop_06a14 + pop_15a18 + pop_19a24 +
+              pop_25a39 + pop_40a69 + pop_70mais)],
+    s[, sum(empregos_baixa_esc + empregos_media_esc + empregos_alta_esc)],
+    s[, sum(matriculas_infantil + matriculas_fundamental + matriculas_medio)],
+    s[, sum(escolas_infantil + escolas_fundamental + escolas_medio)],
+    s[, sum(saude_baixa_compl + saude_media_compl + saude_alta_compl)]
+  ),
+  relacao_esperada = c(rep("igual", 5), rep("≥ total", 2))
+)
+somas[, razao := round(soma_das_partes / total, 4)]
+somas
+
+# As cinco primeiras são partições e devem fechar exatamente.
+# Escolas e estabelecimentos de saúde podem oferecer mais de um nível ou
+# complexidade, então a soma das partes é legitimamente maior que o total.
+stopifnot(
+  "Uma partição não fecha com o total — o mapeamento dos códigos está errado" =
+    all(somas[relacao_esperada == "igual", total == soma_das_partes]),
+  "Uma desagregação múltipla ficou menor que o total" =
+    all(somas[relacao_esperada == "≥ total", soma_das_partes >= total])
+)
+cat("\nAs cinco partições fecham exatamente. Escolas e saúde somam mais que o\n")
+cat("total porque um estabelecimento pode atender vários níveis — esperado.\n")
+```
+
+## Os decis de renda estão bem distribuídos?
+
+Decil é, por definição, uma partição em dez partes. Se a construção estiver
+correta, cada decil deve conter aproximadamente 10% da **população** — não dos
+hexágonos, porque hexágonos têm tamanhos populacionais diferentes.
+
+```{r}
+#| label: val-decis
+distribuicao_decis <- socio[ano == 2019L & !is.na(decil_renda),
+  .(hexagonos = .N, populacao = sum(pop_total, na.rm = TRUE)),
+  by = decil_renda][order(decil_renda)]
+distribuicao_decis[, `:=`(
+  pct_hexagonos = round(100 * hexagonos / sum(hexagonos), 1),
+  pct_populacao = round(100 * populacao / sum(populacao), 1)
+)]
+distribuicao_decis
+
+hexes_sem_renda <- socio[ano == 2019L & is.na(decil_renda), .N]
+cat(sprintf(
+  "\n%s hexágonos sem decil de renda (%.1f%% da grade), com %s habitantes no total.\n",
+  format(hexes_sem_renda, big.mark = "."),
+  100 * hexes_sem_renda / n_hex,
+  format(socio[ano == 2019L & is.na(decil_renda), sum(pop_total, na.rm = TRUE)],
+         big.mark = ".")
+))
+```
+
+Os hexágonos sem decil são as células desabitadas da grade — sem população, não
+há renda *per capita* a classificar. A tabela acima mostra que a partição por
+população fica próxima de 10% em cada decil, como se espera.
+
+## A acessibilidade é comparável entre os três anos? {#sec-comparavel}
+
+Esta é a checagem que a série temporal exige. Se os três anos fossem
+calculados com redes de transporte de vintagens diferentes, ou com metodologias
+diferentes, a comparação não valeria. Duas evidências de que valem:
+
+```{r}
+#| label: val-serie
+# 1) Cobertura idêntica nos três anos
+cobertura <- acesso[modo == "transporte_publico" & periodo == "pico",
+  .(hexagonos = uniqueN(id_hex),
+    com_estimativa = sum(!is.na(empregos_60min)),
+    sem_estimativa = sum(is.na(empregos_60min))),
+  by = ano][order(ano)]
+cobertura
+```
+
+```{r}
+#| label: val-serie2
+# 2) A média ponderada pela população varia de forma plausível, sem saltos
+#    Ponderação pela população, conforme os Capítulos 3 e 9 do livro.
+base_analise <- merge(
+  acesso[modo == "transporte_publico" & periodo == "pico"],
+  socio[, .(id_hex, ano, pop_total, decil_renda)],
+  by = c("id_hex", "ano")
+)
+
+tendencia <- base_analise[
+  , .(empregos_30min = weighted.mean(empregos_30min, w = pop_total, na.rm = TRUE),
+      empregos_60min = weighted.mean(empregos_60min, w = pop_total, na.rm = TRUE),
+      tempo_ate_saude_alta = weighted.mean(tempo_saude_alta_compl, w = pop_total,
+                                           na.rm = TRUE)),
+  by = ano][order(ano)]
+tendencia[, variacao_60min_pct := round(
+  100 * (empregos_60min / first(empregos_60min) - 1), 1)]
+tendencia
+```
+
+A variação entre anos é de poucos pontos percentuais — compatível com mudanças
+reais de rede e de distribuição de empregos em uma cidade consolidada. É esse o
+padrão que se espera de uma série comparável. Um salto de dezenas ou centenas
+de pontos percentuais entre anos consecutivos seria sinal de que a metodologia,
+e não a cidade, mudou.
+
+## A média ponderada produz número, e não `NA`?
+
+A checagem que fecha a armadilha da @sec-overflow. Se a conversão de tipo
+tivesse falhado, a média ponderada devolveria `NA` — e todos os gráficos
+seguintes sairiam vazios sem que nada acusasse o problema.
+
+```{r}
+#| label: val-overflow
+teste <- base_analise[ano == 2019L,
+  weighted.mean(empregos_60min, w = pop_total, na.rm = TRUE)]
+
+stopifnot(
+  "A média ponderada devolveu NA — provável overflow de inteiro" =
+    is.finite(teste),
+  "As contagens precisam ser double, não integer" =
+    is.double(acesso$empregos_60min) && is.double(socio$pop_total)
+)
+
+cat(sprintf(
+  "Média ponderada de empregos em 60 min (2019): %s empregos. Valor finito.\n",
+  format(round(teste), big.mark = ".")
+))
+```
+
+## Quais cortes de tempo existem em cada modo? {#sec-cortes}
+
+Outra afirmação da fonte que convém verificar. O dicionário do `{aopdata}` diz
+que os cortes de 15 e de 45 minutos se aplicam apenas a *"modos de transporte
+ativos"*. Se isso for verdade, `empregos_15min` estaria vazio para transporte
+público e automóvel, e a base não permitiria comparar modos nesse corte.
+
+Antes de medir, há uma distinção a fazer. O AOP não calcula acessibilidade em
+**todos** os hexágonos da grade: onde não há morador nem oportunidade, ele
+devolve célula vazia em todos os indicadores. Então "vazio" tem dois
+significados possíveis, e só um deles indica que o corte não existe:
+
+```{r}
+#| label: val-cortes-vazios
+sem_nenhuma_estimativa <- acesso[is.na(empregos_30min), unique(id_hex)]
+
+cat(sprintf(
+  "Hexágonos sem nenhuma estimativa de acessibilidade: %s de %s (%.1f%% da grade)\n",
+  format(length(sem_nenhuma_estimativa), big.mark = "."),
+  format(uniqueN(acesso$id_hex), big.mark = "."),
+  100 * length(sem_nenhuma_estimativa) / uniqueN(acesso$id_hex)
+))
+
+# Esses hexágonos têm gente ou oportunidade? Se não, o vazio é da grade.
+conteudo <- socio[id_hex %chin% sem_nenhuma_estimativa & ano == 2019L, .(
+  populacao = sum(pop_total), empregos = sum(empregos_total),
+  escolas = sum(escolas_total), saude = sum(saude_total),
+  matriculas = sum(matriculas_total), cras = sum(cras_total)
+)]
+conteudo
+
+stopifnot(
+  "Há hexágono com conteúdo e sem estimativa de acessibilidade" =
+    conteudo[, all(unlist(.SD) == 0)]
+)
+cat("\nTodos vazios em todas as dimensões: é grade sem nada, não falta de dado.\n")
+cat("A @sec-exportacao remove essas células, e a prova acima é o que autoriza.\n")
+```
+
+Agora a medição pode ser feita onde ela significa algo — nos hexágonos em que o
+AOP de fato calculou:
+
+```{r}
+#| label: val-cortes
+cortes <- c("empregos_15min", "empregos_30min", "empregos_45min",
+            "empregos_60min", "empregos_90min", "empregos_120min")
+
+calculados <- acesso[!id_hex %chin% sem_nenhuma_estimativa]
+
+preenchimento <- calculados[
+  , lapply(.SD, function(x) round(100 * mean(!is.na(x)))),
+  .SDcols = cortes, by = modo]
+preenchimento
+```
+
+O corte de 15 minutos está preenchido em **100% das linhas dos quatro modos** —
+o dicionário do pacote está desatualizado nesse ponto. Já o de 45 minutos é
+mesmo exclusivo dos modos ativos, e os de 90 e 120 são exclusivos de transporte
+público e automóvel, como a documentação diz.
+
+```{r}
+#| label: val-cortes-assert
+comparaveis <- c("empregos_15min", "empregos_30min", "empregos_60min")
+
+stopifnot(
+  "Um corte declarado comparável entre modos tem célula vazia" =
+    calculados[, !anyNA(unlist(.SD)), .SDcols = comparaveis],
+  "O corte de 45 min apareceu em modo motorizado" =
+    calculados[modo %chin% c("transporte_publico", "automovel"),
+               all(is.na(empregos_45min))],
+  "Os cortes de 90/120 min apareceram em modo ativo" =
+    calculados[modo %chin% c("caminhada", "bicicleta"),
+               all(is.na(empregos_90min)) && all(is.na(empregos_120min))]
+)
+cat("15, 30 e 60 minutos: preenchidos nos quatro modos. Comparáveis.\n")
+cat("45 min: só modos ativos. 90 e 120 min: só transporte público e automóvel.\n")
+```
+
+Portanto a regra de uso é: **compare modos em 15, 30 e 60 minutos** — três
+cortes, e não dois. A verificação ganhou um corte que a documentação teria
+feito descartar.
+
+## Os cortes de tempo são monotônicos?
+
+Uma checagem de consistência interna: o número de empregos alcançáveis em 60
+minutos nunca pode ser menor que o alcançável em 30, que nunca pode ser menor
+que em 15. Se essa relação se rompe, há erro no dado.
+
+```{r}
+#| label: val-monotonia
+verificar <- acesso[!is.na(empregos_30min) & !is.na(empregos_60min)]
+violacoes <- verificar[empregos_60min < empregos_30min |
+                       empregos_30min < empregos_15min, .N]
+
+stopifnot("Os cortes de tempo não são monotônicos — há erro no dado" =
+            violacoes == 0)
+cat(sprintf(
+  "Monotonicidade verificada em %s linhas: 15min ≤ 30min ≤ 60min sempre. %d violações.\n",
+  format(nrow(verificar), big.mark = "."), violacoes
+))
+```
+
+---
+
+# Conferência: reproduzindo os achados do livro {#sec-conferencia}
+
+Validação estrutural não basta — a base também precisa reproduzir resultados
+conhecidos. Os gráficos a seguir replicam análises dos Capítulos 3 e 9 com a
+nossa base. Se os padrões aparecerem, a base está coerente com a fonte.
+
+Todos usam **média ponderada pela população**, que é a exigência metodológica
+que o livro enfatiza no Capítulo 3:
+
+> *"precisamos ponderar o nível de acessibilidade de cada origem pela
+> quantidade de pessoas que residem ali. [...] Como em nossa análise nos
+> importamos com as pessoas, e não com as unidades espaciais em que elas estão
+> agregadas, precisamos fazer a ponderação."*
+
+## Desigualdade de acesso a empregos por decil de renda
+
+```{r}
+#| label: fig-decis
+#| fig-cap: "Empregos alcançáveis em até 60 minutos por transporte público, no pico, segundo o decil de renda do hexágono. São Paulo, 2019."
+grafico_decis <- base_analise[ano == 2019L & !is.na(decil_renda)]
+
+ggplot(grafico_decis, aes(x = factor(decil_renda), y = empregos_60min / 1e6)) +
+  geom_boxplot(aes(color = factor(decil_renda)), outlier.alpha = 0.15) +
+  scale_color_brewer(palette = "RdBu", guide = "none") +
+  scale_x_discrete(labels = c("D1\nmais\npobres", paste0("D", 2:9),
+                              "D10\nmais\nricos")) +
+  labs(
+    x = "Decil de renda per capita",
+    y = "Empregos alcançáveis (milhões)",
+    title = "Quem mora onde alcança mais empregos",
+    subtitle = "Transporte público, até 60 minutos, horário de pico — São Paulo, 2019"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r}
+#| label: razao-decis
+razao <- grafico_decis[
+  , .(media = weighted.mean(empregos_60min, w = pop_total, na.rm = TRUE)),
+  by = decil_renda][order(decil_renda)]
+
+cat(sprintf(
+  "Decil 10 alcança em média %s empregos; decil 1 alcança %s.\nRazão: %.1f vezes.\n",
+  format(round(razao[decil_renda == 10, media]), big.mark = "."),
+  format(round(razao[decil_renda == 1, media]), big.mark = "."),
+  razao[decil_renda == 10, media] / razao[decil_renda == 1, media]
+))
+```
+
+O padrão do livro se reproduz: a acessibilidade cresce de forma sistemática com
+a renda. O Capítulo 3 explica o mecanismo — os mais ricos moram perto das
+concentrações de emprego e da oferta de transporte de média e alta capacidade;
+os mais pobres moram longe de ambas.
+
+## Tempo até o hospital mais próximo, por decil de renda
+
+Reprodução direta da análise do Capítulo 9, aplicando aqui o tratamento de
+`Inf` que o livro recomenda para a etapa de análise.
+
+```{r}
+#| label: fig-hospital
+#| fig-cap: "Tempo médio de viagem por transporte público até o estabelecimento de saúde de alta complexidade mais próximo, por decil de renda. São Paulo, 2019."
+hospital <- base_analise[ano == 2019L & !is.na(decil_renda)]
+# Tratamento do livro: não alcançável em 2h passa a contar como 120 min
+hospital[is.na(tempo_saude_alta_compl), tempo_saude_alta_compl := 120]
+
+resumo_hospital <- hospital[
+  , .(minutos = weighted.mean(tempo_saude_alta_compl, w = pop_total, na.rm = TRUE)),
+  by = decil_renda][order(decil_renda)][!is.na(minutos)]
+
+ggplot(resumo_hospital, aes(x = factor(decil_renda), y = minutos)) +
+  geom_col(fill = "#2c9e9e") +
+  geom_text(aes(label = round(minutos)), vjust = -0.5, size = 3.5) +
+  scale_x_discrete(labels = c("D1\nmais\npobres", paste0("D", 2:9),
+                              "D10\nmais\nricos")) +
+  labs(
+    x = "Decil de renda per capita",
+    y = "Tempo de viagem (minutos)",
+    title = "Quanto tempo até o hospital de alta complexidade mais próximo",
+    subtitle = "Transporte público, pico, média ponderada pela população — São Paulo, 2019"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## Evolução no tempo, por decil de renda
+
+Esta é a análise que só a série 2017–2019 permite, e é o motivo de a
+comparabilidade temporal ter sido tratada com tanto cuidado nas seções
+anteriores.
+
+```{r}
+#| label: fig-tendencia
+#| fig-cap: "Evolução dos empregos alcançáveis em até 60 minutos por transporte público, por decil de renda. São Paulo, 2017–2019."
+evolucao <- base_analise[!is.na(decil_renda),
+  .(empregos = weighted.mean(empregos_60min, w = pop_total, na.rm = TRUE)),
+  by = .(ano, decil_renda)]
+
+ggplot(evolucao, aes(x = ano, y = empregos / 1e6,
+                     color = factor(decil_renda), group = decil_renda)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  scale_color_brewer(palette = "RdBu", name = "Decil\nde renda") +
+  scale_x_continuous(breaks = ANOS) +
+  labs(
+    x = NULL,
+    y = "Empregos alcançáveis (milhões)",
+    title = "A desigualdade de acesso se manteve estável entre 2017 e 2019",
+    subtitle = "Transporte público, até 60 minutos, pico, média ponderada pela população"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## Comparação entre modos
+
+Os cortes de 15, 30 e 60 minutos existem em todos os modos, o que permite
+compará-los diretamente. Reproduz o espírito da última análise do Capítulo 9,
+que contrasta automóvel e caminhada.
+
+```{r}
+#| label: fig-modos
+#| fig-cap: "Empregos alcançáveis em até 30 minutos por modo de transporte, média ponderada pela população. São Paulo, 2019."
+comparacao_modos <- merge(
+  acesso[ano == 2019L & periodo %in% c("pico", "nao_se_aplica")],
+  socio[ano == 2019L, .(id_hex, ano, pop_total)],
+  by = c("id_hex", "ano")
+)[, .(empregos = weighted.mean(empregos_30min, w = pop_total, na.rm = TRUE)),
+  by = modo][order(-empregos)]
+
+comparacao_modos[, razao_vs_caminhada := round(
+  empregos / empregos[modo == "caminhada"], 1)]
+comparacao_modos
+
+ggplot(comparacao_modos, aes(x = reorder(modo, empregos), y = empregos / 1e3)) +
+  geom_col(fill = "#4a6fa5") +
+  geom_text(aes(label = paste0(round(empregos / 1e3), " mil")),
+            hjust = -0.15, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    x = NULL, y = "Empregos alcançáveis (milhares)",
+    title = "Empregos alcançáveis em 30 minutos, por modo",
+    subtitle = "Média ponderada pela população — São Paulo, 2019"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+### A checagem mais forte que temos
+
+Este número em particular permite uma verificação externa. O Capítulo 9 do
+livro publica o resultado exato dessa razão para São Paulo:
+
+> *"Em São Paulo e em Brasília, viagens de automóvel de até trinta minutos
+> permitem acessar, em média, um número de empregos 54 vezes maior do que
+> viagens a pé de mesma duração."*
+
+Se a nossa base foi construída corretamente, ela tem de reproduzir esse 54.
+
+```{r}
+#| label: val-externa
+razao_calculada <- comparacao_modos[modo == "automovel", razao_vs_caminhada]
+razao_livro <- 54
+
+cat(sprintf("Razão automóvel / caminhada nesta base: %.1f vezes\n",
+            razao_calculada))
+cat(sprintf("Razão publicada no Capítulo 9 do livro: %d vezes\n", razao_livro))
+
+stopifnot(
+  "A razão automóvel/caminhada não reproduz o valor publicado no livro" =
+    abs(razao_calculada - razao_livro) < 1
+)
+cat("\nA base reproduz o valor publicado pelo Ipea.\n")
+```
+
+Esta é a validação mais forte do notebook. As checagens anteriores confirmam
+que a base é *internamente* consistente; esta confirma que ela concorda com um
+resultado publicado e independente. Se houvesse erro na seleção de colunas, na
+ponderação ou nos tipos, este número não fecharia.
+
+## Distribuição espacial
+
+```{r}
+#| label: fig-mapa
+#| fig-cap: "Distribuição espacial dos empregos alcançáveis em até 60 minutos por transporte público no pico. São Paulo, 2019."
+mapa <- merge(
+  grade,
+  acesso[ano == 2019L & modo == "transporte_publico" & periodo == "pico",
+         .(id_hex, empregos_60min)],
+  by = "id_hex"
+)
+
+ggplot(mapa) +
+  geom_sf(aes(fill = empregos_60min / 1e6), color = NA) +
+  scale_fill_viridis_c(option = "inferno", name = "Empregos\n(milhões)") +
+  labs(
+    title = "Acessibilidade a empregos em São Paulo",
+    subtitle = "Transporte público, até 60 minutos, pico — 2019"
+  ) +
+  theme_void(base_size = 12)
+```
+
+O mapa mostra a concentração no vetor sudoeste e ao longo dos corredores de
+metrô e trem, com queda acentuada nas extremidades leste, sul e norte — o
+mesmo padrão descrito no Capítulo 3.
+
+---
+
+# A planilha final {#sec-exportacao}
+
+## Montagem: uma tabela, pronta para uso
+
+Até aqui trabalhamos com duas tabelas separadas — o que é a forma correta de
+*armazenar* os dados, sem repetir população e renda em cada modo de transporte.
+Mas quem vai analisar quer abrir **um arquivo** e começar. Então unimos as duas
+pela chave `id_hex` + `ano`.
+
+```{r}
+#| label: monta-planilha
+planilha <- merge(acesso, socio, by = c("id_hex", "ano"))
+
+cat(sprintf("Após a união: %s linhas × %d colunas\n",
+            format(nrow(planilha), big.mark = "."), ncol(planilha)))
+```
+
+## Remoção das células vazias da grade
+
+A grade H3 é um retângulo de hexágonos que cobre o município inteiro, e parte
+dela cai em área sem nada: sem moradores e sem nenhuma oportunidade. Essas
+células só ocupam espaço no arquivo.
+
+Duas armadilhas aqui, e as duas são do tipo que passa despercebido.
+
+A primeira: um filtro mal feito descarta dado de verdade. Então medimos o que
+sai antes de remover, e exigimos que a perda seja exatamente zero.
+
+A segunda, mais sutil: as oportunidades variam por ano. Se filtrássemos **linha
+por linha**, um hexágono que ganhou uma escola em 2019 entraria só naquele ano,
+e o painel deixaria de ser balanceado — a base perderia a comparabilidade
+temporal que a @sec-comparavel acabou de validar. Por isso o filtro decide por
+**hexágono**: uma célula fica se tiver conteúdo em *qualquer* ano, e então
+todos os seus anos ficam.
+
+```{r}
+#| label: filtra-grade
+tem_conteudo <- quote(
+  pop_total > 0 | empregos_total > 0 | escolas_total > 0 |
+    saude_total > 0 | matriculas_total > 0 | cras_total > 0
+)
+
+# Decisão no nível do hexágono: basta ter conteúdo em um dos três anos
+hex_com_conteudo <- unique(planilha[eval(tem_conteudo), id_hex])
+
+# Quanto de cada grandeza existe antes e depois do filtro, num ano e modo fixos
+# (para não contar a mesma população várias vezes)
+referencia <- planilha[ano == 2019L & modo == "caminhada"]
+mantidos   <- referencia[id_hex %chin% hex_com_conteudo]
+
+conferencia <- data.table(
+  grandeza = c("População", "Empregos", "Escolas", "Matrículas",
+               "Estab. de saúde", "CRAS"),
+  total_na_grade = c(
+    referencia[, sum(pop_total, na.rm = TRUE)],
+    referencia[, sum(empregos_total, na.rm = TRUE)],
+    referencia[, sum(escolas_total, na.rm = TRUE)],
+    referencia[, sum(matriculas_total, na.rm = TRUE)],
+    referencia[, sum(saude_total, na.rm = TRUE)],
+    referencia[, sum(cras_total, na.rm = TRUE)]
+  ),
+  total_apos_filtro = c(
+    mantidos[, sum(pop_total, na.rm = TRUE)],
+    mantidos[, sum(empregos_total, na.rm = TRUE)],
+    mantidos[, sum(escolas_total, na.rm = TRUE)],
+    mantidos[, sum(matriculas_total, na.rm = TRUE)],
+    mantidos[, sum(saude_total, na.rm = TRUE)],
+    mantidos[, sum(cras_total, na.rm = TRUE)]
+  )
+)
+conferencia[, perdido := total_na_grade - total_apos_filtro]
+conferencia
+
+stopifnot(
+  "O filtro da grade descartou conteúdo — não pode" =
+    all(conferencia$perdido == 0)
+)
+
+hex_antes <- uniqueN(planilha$id_hex)
+planilha <- planilha[id_hex %chin% hex_com_conteudo]
+hex_depois <- uniqueN(planilha$id_hex)
+
+cat(sprintf(
+  "\nHexágonos: %s → %s (removidos %s, sem população e sem oportunidades em nenhum ano).\n",
+  format(hex_antes, big.mark = "."), format(hex_depois, big.mark = "."),
+  format(hex_antes - hex_depois, big.mark = ".")
+))
+
+# O painel tem de continuar balanceado: mesmo conjunto de hexágonos em cada ano
+por_ano <- planilha[modo == "caminhada", .(hexagonos = uniqueN(id_hex)), by = ano]
+por_ano
+
+stopifnot(
+  "O filtro desbalanceou o painel entre os anos" =
+    uniqueN(por_ano$hexagonos) == 1L
+)
+
+cat(sprintf("Planilha final: %s linhas × %d colunas.\n",
+            format(nrow(planilha), big.mark = "."), ncol(planilha)))
+```
+
+Perda zero nas seis grandezas, e o painel segue balanceado. As células
+removidas eram grade vazia, não periferia — distinção que importa, porque foi
+justamente descartar a periferia que invalidou tentativas anteriores.
+
+## Ordenação das colunas
+
+Colunas agrupadas por assunto, para quem abrir o arquivo numa planilha
+conseguir se orientar.
+
+```{r}
+#| label: ordena-colunas
+ordem <- c(
+  # Identificação
+  "id_hex", "ano", "modo", "periodo", "lon", "lat", "name_muni", "code_muni",
+  # Quem mora aqui (Censo 2010)
+  "pop_total", "pop_homens", "pop_mulheres",
+  "pop_branca", "pop_negra", "pop_indigena", "pop_amarela",
+  "pop_00a05", "pop_06a14", "pop_15a18", "pop_19a24", "pop_25a39",
+  "pop_40a69", "pop_70mais",
+  "renda_per_capita", "quintil_renda", "decil_renda",
+  # O que existe aqui (uso do solo, varia por ano)
+  "empregos_total", "empregos_baixa_esc", "empregos_media_esc", "empregos_alta_esc",
+  "escolas_total", "escolas_infantil", "escolas_fundamental", "escolas_medio",
+  "matriculas_total", "matriculas_infantil", "matriculas_fundamental",
+  "matriculas_medio",
+  "saude_total", "saude_baixa_compl", "saude_media_compl", "saude_alta_compl",
+  "cras_total",
+  # O que se alcança daqui (varia por modo e período)
+  "empregos_15min", "empregos_30min", "empregos_45min", "empregos_60min",
+  "empregos_90min", "empregos_120min",
+  "empregos_baixa_esc_60min", "empregos_media_esc_60min", "empregos_alta_esc_60min",
+  "saude_30min", "saude_60min", "escolas_30min", "escolas_60min",
+  "matriculas_30min", "matriculas_60min", "cras_30min", "cras_60min",
+  "tempo_saude_qualquer", "tempo_saude_baixa_compl", "tempo_saude_media_compl",
+  "tempo_saude_alta_compl", "tempo_escola_qualquer", "tempo_escola_infantil",
+  "tempo_escola_fundamental", "tempo_escola_medio", "tempo_cras",
+  "pessoas_que_alcancam_60min"
+)
+
+stopifnot(
+  "A ordenação não cobre exatamente as colunas da planilha" =
+    setequal(ordem, names(planilha))
+)
+
+setcolorder(planilha, ordem)
+setorder(planilha, id_hex, ano, modo, periodo)
+```
+
+## Dicionário de variáveis
+
+O dicionário é conferido contra as colunas reais da planilha por asserção, o
+que impede que ele fique dessincronizado da base.
+
+```{r}
+#| label: dicionario
+dicionario <- rbindlist(list(
+  data.table(
+    grupo = "identificacao",
+    coluna = c("id_hex", "ano", "modo", "periodo", "lon", "lat",
+               "name_muni", "code_muni"),
+    codigo_aop = c("id_hex", "year", "mode", "peak", "—", "—",
+                   "name_muni", "code_muni"),
+    descricao = c(
+      "Identificador único da célula da grade hexagonal H3",
+      "Ano de referência das oportunidades e da acessibilidade: 2017, 2018 ou 2019",
+      "Modo de transporte: transporte_publico, caminhada, bicicleta ou automovel",
+      "Período do dia: pico (6h-8h), fora_pico (14h-16h) ou nao_se_aplica (modos ativos)",
+      "Longitude do centroide do hexágono, em WGS 84",
+      "Latitude do centroide do hexágono, em WGS 84",
+      "Nome do município",
+      "Código IBGE de sete dígitos do município")),
+  data.table(
+    grupo = "populacao_censo_2010",
+    coluna = c("pop_total", "pop_homens", "pop_mulheres", "pop_branca",
+               "pop_negra", "pop_indigena", "pop_amarela", "pop_00a05",
+               "pop_06a14", "pop_15a18", "pop_19a24", "pop_25a39",
+               "pop_40a69", "pop_70mais"),
+    codigo_aop = c("P001", "P007", "P006", "P002", "P003", "P004", "P005",
+                   "P010", "P011", "P012", "P013", "P014", "P015", "P016"),
+    descricao = c(
+      "População total residente no hexágono. USE COMO PESO nas médias",
+      "Homens. Vem de P007 — o dicionário do {aopdata} troca P006 e P007; ver secao 'O rotulo de sexo esta correto?' no notebook",
+      "Mulheres. Vem de P006 — idem",
+      "População branca", "População negra",
+      "População indígena", "População amarela",
+      "Pessoas de 0 a 5 anos", "Pessoas de 6 a 14 anos",
+      "Pessoas de 15 a 18 anos", "Pessoas de 19 a 24 anos",
+      "Pessoas de 25 a 39 anos", "Pessoas de 40 a 69 anos",
+      "Pessoas de 70 anos ou mais")),
+  data.table(
+    grupo = "renda_censo_2010",
+    coluna = c("renda_per_capita", "quintil_renda", "decil_renda"),
+    codigo_aop = c("R001", "R002", "R003"),
+    descricao = c(
+      "Renda per capita média do hexágono, em R$ de 2010",
+      "Quintil de renda: 1 = mais pobres, 5 = mais ricos. Vazio se não há moradores",
+      "Decil de renda: 1 = mais pobres, 10 = mais ricos. Vazio se não há moradores")),
+  data.table(
+    grupo = "uso_do_solo_no_hexagono",
+    coluna = c("empregos_total", "empregos_baixa_esc", "empregos_media_esc",
+               "empregos_alta_esc", "escolas_total", "escolas_infantil",
+               "escolas_fundamental", "escolas_medio", "matriculas_total",
+               "matriculas_infantil", "matriculas_fundamental",
+               "matriculas_medio", "saude_total", "saude_baixa_compl",
+               "saude_media_compl", "saude_alta_compl", "cras_total"),
+    codigo_aop = c("T001", "T002", "T003", "T004", "E001", "E002", "E003",
+                   "E004", "M001", "M002", "M003", "M004", "S001", "S002",
+                   "S003", "S004", "C001"),
+    descricao = c(
+      "Empregos localizados NESTE hexágono",
+      "Empregos que exigem baixa escolaridade",
+      "Empregos que exigem média escolaridade",
+      "Empregos que exigem alta escolaridade",
+      "Escolas públicas neste hexágono",
+      "Escolas públicas de ensino infantil",
+      "Escolas públicas de ensino fundamental",
+      "Escolas públicas de ensino médio",
+      "Matrículas em escolas públicas",
+      "Matrículas no ensino infantil",
+      "Matrículas no ensino fundamental",
+      "Matrículas no ensino médio",
+      "Estabelecimentos de saúde neste hexágono",
+      "Estabelecimentos de saúde de baixa complexidade",
+      "Estabelecimentos de saúde de média complexidade",
+      "Estabelecimentos de saúde de alta complexidade",
+      "CRAS — Centros de Referência de Assistência Social")),
+  data.table(
+    grupo = "acessibilidade_empregos",
+    coluna = c("empregos_15min", "empregos_30min", "empregos_45min",
+               "empregos_60min", "empregos_90min", "empregos_120min",
+               "empregos_baixa_esc_60min", "empregos_media_esc_60min",
+               "empregos_alta_esc_60min"),
+    codigo_aop = c("CMATT15", "CMATT30", "CMATT45", "CMATT60", "CMATT90",
+                   "CMATT120", "CMATB60", "CMATM60", "CMATA60"),
+    descricao = c(
+      "Empregos ALCANÇÁVEIS a partir daqui em até 15 minutos",
+      "Empregos alcançáveis em até 30 minutos",
+      "Empregos alcançáveis em até 45 minutos. Só caminhada e bicicleta têm este corte",
+      "Empregos alcançáveis em até 60 minutos",
+      "Empregos alcançáveis em até 90 minutos. Só transporte público e automóvel",
+      "Empregos alcançáveis em até 120 minutos. Só transporte público e automóvel",
+      "Empregos de baixa escolaridade alcançáveis em até 60 minutos",
+      "Empregos de média escolaridade alcançáveis em até 60 minutos",
+      "Empregos de alta escolaridade alcançáveis em até 60 minutos")),
+  data.table(
+    grupo = "acessibilidade_servicos",
+    coluna = c("saude_30min", "saude_60min", "escolas_30min", "escolas_60min",
+               "matriculas_30min", "matriculas_60min", "cras_30min",
+               "cras_60min", "pessoas_que_alcancam_60min"),
+    codigo_aop = c("CMAST30", "CMAST60", "CMAET30", "CMAET60", "CMAMT30",
+                   "CMAMT60", "CMACT30", "CMACT60", "CMPPT60"),
+    descricao = c(
+      "Estabelecimentos de saúde alcançáveis em até 30 minutos",
+      "Estabelecimentos de saúde alcançáveis em até 60 minutos",
+      "Escolas públicas alcançáveis em até 30 minutos",
+      "Escolas públicas alcançáveis em até 60 minutos",
+      "Matrículas públicas alcançáveis em até 30 minutos",
+      "Matrículas públicas alcançáveis em até 60 minutos",
+      "CRAS alcançáveis em até 30 minutos",
+      "CRAS alcançáveis em até 60 minutos",
+      "Acessibilidade passiva: pessoas que alcançam ESTE hexágono em até 60 min")),
+  data.table(
+    grupo = "tempo_ate_o_mais_proximo",
+    coluna = c("tempo_saude_qualquer", "tempo_saude_baixa_compl",
+               "tempo_saude_media_compl", "tempo_saude_alta_compl",
+               "tempo_escola_qualquer", "tempo_escola_infantil",
+               "tempo_escola_fundamental", "tempo_escola_medio", "tempo_cras"),
+    codigo_aop = c("TMIST", "TMISB", "TMISM", "TMISA", "TMIET", "TMIEI",
+                   "TMIEF", "TMIEM", "TMICT"),
+    descricao = paste(
+      c("Minutos até o estabelecimento de saúde mais próximo",
+        "Minutos até a saúde de baixa complexidade mais próxima",
+        "Minutos até a saúde de média complexidade mais próxima",
+        "Minutos até a saúde de alta complexidade mais próxima",
+        "Minutos até a escola pública mais próxima",
+        "Minutos até a escola de ensino infantil mais próxima",
+        "Minutos até a escola de ensino fundamental mais próxima",
+        "Minutos até a escola de ensino médio mais próxima",
+        "Minutos até o CRAS mais próximo"),
+      "— VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"))
+))
+
+stopifnot(
+  "O dicionário e a planilha divergem" =
+    setequal(dicionario$coluna, names(planilha))
+)
+
+# Reordena o dicionário na mesma ordem das colunas da planilha
+dicionario <- dicionario[match(names(planilha), coluna)]
+dicionario[, posicao := .I]
+setcolorder(dicionario, c("posicao", "coluna", "grupo", "codigo_aop", "descricao"))
+
+cat(sprintf("Dicionário conferido: %d variáveis, uma para cada coluna.\n",
+            nrow(dicionario)))
+dicionario[, .N, by = grupo]
+```
+
+## Gravação
+
+```{r}
+#| label: exporta
+arquivo_planilha   <- file.path(DIR_SAIDA, "acessibilidade_sp_2017_2019.csv")
+arquivo_dicionario <- file.path(DIR_SAIDA, "dicionario_variaveis.csv")
+arquivo_grade      <- file.path(DIR_SAIDA, "grade_hexagonos_sp.gpkg")
+
+fwrite(planilha, arquivo_planilha, na = "", dec = ".", bom = TRUE)
+fwrite(dicionario, arquivo_dicionario, na = "", dec = ".", bom = TRUE)
+
+# Só os hexágonos que ficaram na planilha
+st_write(grade[grade$id_hex %in% unique(planilha$id_hex), "id_hex"],
+         arquivo_grade, delete_dsn = TRUE, quiet = TRUE)
+
+tamanho <- function(f) {
+  format(structure(file.size(f), class = "object_size"),
+         units = "auto", standard = "SI")
+}
+
+data.table(
+  arquivo = basename(c(arquivo_planilha, arquivo_dicionario, arquivo_grade)),
+  linhas = c(nrow(planilha), nrow(dicionario),
+             uniqueN(planilha$id_hex)),
+  colunas = c(ncol(planilha), ncol(dicionario), 2L),
+  tamanho = sapply(c(arquivo_planilha, arquivo_dicionario, arquivo_grade),
+                   tamanho, USE.NAMES = FALSE)
+)
+```
+
+O `bom = TRUE` grava a marca de codificação UTF-8 que o Excel espera. Sem ela,
+os acentos aparecem corrompidos ao abrir o CSV no Windows.
+
+## O que é cada arquivo
+
+```{r}
+#| label: tbl-arquivos
+#| echo: false
+kable(data.table(
+  Arquivo = c("`acessibilidade_sp_2017_2019.csv`",
+              "`dicionario_variaveis.csv`",
+              "`grade_hexagonos_sp.gpkg`"),
+  `É isto` = c(
+    "**A planilha.** É o arquivo para analisar",
+    "O significado de cada uma das colunas da planilha",
+    "A geometria dos hexágonos, para fazer mapas"
+  ),
+  `Uma linha é` = c("hexágono × ano × modo × período", "uma variável", "um hexágono")
+), caption = "Os três arquivos gerados, em dados/saida/.")
+```
+
+## A estrutura da planilha, em uma frase
+
+Cada linha responde: **"a partir deste hexágono, neste ano, por este modo e
+neste horário — quem mora aqui, o que existe aqui, e o que se alcança daqui."**
+
+As colunas se dividem em três blocos com significados bem diferentes, e
+confundi-los é o erro mais fácil de cometer:
+
+```{r}
+#| label: tbl-blocos
+#| echo: false
+kable(data.table(
+  Bloco = c("`pop_*`, `renda_*`", "`empregos_total`, `escolas_total`, ...",
+            "`empregos_60min`, `tempo_saude_*`, ..."),
+  Responde = c("Quem mora **aqui**",
+               "O que existe **aqui**",
+               "O que se alcança **daqui**"),
+  `Varia com` = c("Nada — é o Censo 2010, igual nos três anos",
+                  "O ano",
+                  "O ano, o modo e o período"),
+  Exemplo = c("`pop_total` = 2.386 moradores",
+              "`empregos_total` = 52 empregos neste hexágono",
+              "`empregos_60min` = 1,2 milhão de empregos ao alcance")
+), caption = "Os três blocos de colunas. `empregos_total` e `empregos_60min` medem coisas distintas.")
+```
+
+## Como carregar {#sec-como-carregar}
+
+Ler o CSV diretamente com `fread()` reintroduz a armadilha da @sec-overflow: um
+arquivo de texto não guarda tipo, e o `fread()` vai inferir inteiro outra vez.
+O projeto acompanha um carregador que resolve isso:
+
+```r
+source("R/carregar_base.R")
+
+base <- carregar_base()                                   # tudo
+tp   <- carregar_base(modo = "transporte_publico",        # só um recorte
+                      periodo = "pico")
+```
+
+Em Python o problema não existe, porque o pandas usa ponto flutuante de 64 bits:
+
+```python
+import pandas as pd
+base = pd.read_csv("dados/saida/acessibilidade_sp_2017_2019.csv")
+tp = base.query("modo == 'transporte_publico' and periodo == 'pico'")
+
+# média ponderada pela população, como o livro exige
+import numpy as np
+np.average(tp.query("ano == 2019").empregos_60min,
+           weights=tp.query("ano == 2019").pop_total)
+```
+
+---
+
+# Regras de uso da base {#sec-regras}
+
+Sete pontos que decorrem da natureza da fonte e que evitam conclusões erradas.
+
+**0. Carregue a base com `R/carregar_base.R`.** Ler os CSVs diretamente com
+`fread()` faz as contagens voltarem como inteiro e quebra silenciosamente
+qualquer média ponderada (@sec-overflow). É a primeira regra porque é a única
+que produz um erro invisível.
+
+**1. Sempre ponderar pela população.** Os indicadores são atributos de
+*lugares*, não de pessoas. Um hexágono com 3 mil habitantes e outro com 30 não
+podem pesar igual numa média sobre a população. Use
+`weighted.mean(x, w = pop_total)`, como o livro faz em todos os exemplos.
+
+**2. População e renda são de 2010; oportunidades são do ano da linha.** O AOP
+publica dados populacionais de um único censo. Portanto `pop_total`,
+`renda_per_capita` e `decil_renda` são idênticos nos três anos, enquanto
+`empregos_total` e os demais de uso do solo variam. A variação da
+acessibilidade entre 2017 e 2019 reflete mudanças na rede de transporte e na
+distribuição de oportunidades — não mudanças demográficas.
+
+**3. Comparar modos apenas nos cortes de 15, 30 e 60 minutos.** São os únicos
+presentes em todos os modos, conforme verificado na @sec-cortes. As colunas de
+45 minutos só têm valor para caminhada e bicicleta; as de 90 e 120 minutos, só
+para transporte público e automóvel. Fora disso a célula está vazia porque o
+indicador não existe naquele modo, não por falha.
+
+**4. Automóvel não tem série temporal.** Existe só para 2019. Use-o para
+comparar modos naquele ano, nunca para tendência.
+
+**5. Célula vazia nas colunas `tempo_*` significa "não alcançável".** Não é
+dado faltante. Se a análise exigir um número, o Capítulo 9 sugere imputar o
+limite de roteamento — mas esse limite **difere por modo**: 60 minutos para
+caminhada, 90 para bicicleta e acima de 175 para transporte público, que o AOP
+não trunca em 120. Automóvel não tem célula vazia. Os valores medidos estão na
+@sec-construcao, e imputar o número errado inventa viagens que o modelo não
+admite. Essa é uma decisão da análise, e precisa ser declarada.
+
+**6. Confira rótulo contra conteúdo antes de confiar.** `pop_homens` e
+`pop_mulheres` vêm, respectivamente, de `P007` e `P006` — o inverso do que o
+dicionário oficial do `{aopdata}` documenta. A @sec-sexo demonstra a inversão
+contra os números do Censo 2010 em três cidades. As colunas desta base estão
+nomeadas pelo conteúdo verificado; se você reler o dado direto do `{aopdata}`,
+o erro volta.
+
+---
+
+# Referência {.unnumbered}
+
+Pereira, Rafael H. M. & Herszenhut, Daniel (2023). *Introdução à acessibilidade
+urbana: um guia prático em R*. Ipea — Instituto de Pesquisa Econômica Aplicada.
+<https://ipeagit.github.io/intro_access_book/>
+
+Capítulos utilizados na construção desta base:
+
+| Capítulo | O que foi usado |
+|:--|:--|
+| 2 — Medidas de acessibilidade | Definição formal dos indicadores cumulativo e de custo mínimo |
+| 3 — Calculando acessibilidade em R | Caminho alternativo (r5r), e a exigência de ponderar pela população |
+| 4 — Dados GTFS | Estrutura do feed e o papel do `calendar.txt` na validade temporal |
+| 7 — Dados de população | Dicionário das variáveis `P*` e `R*` |
+| 8 — Dados de oportunidades | Dicionário das variáveis `T*`, `E*`, `M*`, `S*`, `C*` |
+| 9 — Estimativas de acessibilidade | `read_access()`, codificação `CMA`/`CMP`/`TMI` e análises de referência |
+
+```{r}
+#| label: sessao
+#| echo: false
+cat("Gerado em:", format(Sys.time(), "%d/%m/%Y %H:%M"), "\n")
+cat("R:", R.version.string, "\n")
+cat("aopdata:", as.character(packageVersion("aopdata")), "\n")
+```

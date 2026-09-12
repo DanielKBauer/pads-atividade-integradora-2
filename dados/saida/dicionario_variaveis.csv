@@ -1,0 +1,70 @@
+﻿posicao,coluna,grupo,codigo_aop,descricao
+1,id_hex,identificacao,id_hex,Identificador único da célula da grade hexagonal H3
+2,ano,identificacao,year,"Ano de referência das oportunidades e da acessibilidade: 2017, 2018 ou 2019"
+3,modo,identificacao,mode,"Modo de transporte: transporte_publico, caminhada, bicicleta ou automovel"
+4,periodo,identificacao,peak,"Período do dia: pico (6h-8h), fora_pico (14h-16h) ou nao_se_aplica (modos ativos)"
+5,lon,identificacao,—,"Longitude do centroide do hexágono, em WGS 84"
+6,lat,identificacao,—,"Latitude do centroide do hexágono, em WGS 84"
+7,name_muni,identificacao,name_muni,Nome do município
+8,code_muni,identificacao,code_muni,Código IBGE de sete dígitos do município
+9,pop_total,populacao_censo_2010,P001,População total residente no hexágono. USE COMO PESO nas médias
+10,pop_homens,populacao_censo_2010,P007,Homens. Vem de P007 — o dicionário do {aopdata} troca P006 e P007; ver secao 'O rotulo de sexo esta correto?' no notebook
+11,pop_mulheres,populacao_censo_2010,P006,Mulheres. Vem de P006 — idem
+12,pop_branca,populacao_censo_2010,P002,População branca
+13,pop_negra,populacao_censo_2010,P003,População negra
+14,pop_indigena,populacao_censo_2010,P004,População indígena
+15,pop_amarela,populacao_censo_2010,P005,População amarela
+16,pop_00a05,populacao_censo_2010,P010,Pessoas de 0 a 5 anos
+17,pop_06a14,populacao_censo_2010,P011,Pessoas de 6 a 14 anos
+18,pop_15a18,populacao_censo_2010,P012,Pessoas de 15 a 18 anos
+19,pop_19a24,populacao_censo_2010,P013,Pessoas de 19 a 24 anos
+20,pop_25a39,populacao_censo_2010,P014,Pessoas de 25 a 39 anos
+21,pop_40a69,populacao_censo_2010,P015,Pessoas de 40 a 69 anos
+22,pop_70mais,populacao_censo_2010,P016,Pessoas de 70 anos ou mais
+23,renda_per_capita,renda_censo_2010,R001,"Renda per capita média do hexágono, em R$ de 2010"
+24,quintil_renda,renda_censo_2010,R002,"Quintil de renda: 1 = mais pobres, 5 = mais ricos. Vazio se não há moradores"
+25,decil_renda,renda_censo_2010,R003,"Decil de renda: 1 = mais pobres, 10 = mais ricos. Vazio se não há moradores"
+26,empregos_total,uso_do_solo_no_hexagono,T001,Empregos localizados NESTE hexágono
+27,empregos_baixa_esc,uso_do_solo_no_hexagono,T002,Empregos que exigem baixa escolaridade
+28,empregos_media_esc,uso_do_solo_no_hexagono,T003,Empregos que exigem média escolaridade
+29,empregos_alta_esc,uso_do_solo_no_hexagono,T004,Empregos que exigem alta escolaridade
+30,escolas_total,uso_do_solo_no_hexagono,E001,Escolas públicas neste hexágono
+31,escolas_infantil,uso_do_solo_no_hexagono,E002,Escolas públicas de ensino infantil
+32,escolas_fundamental,uso_do_solo_no_hexagono,E003,Escolas públicas de ensino fundamental
+33,escolas_medio,uso_do_solo_no_hexagono,E004,Escolas públicas de ensino médio
+34,matriculas_total,uso_do_solo_no_hexagono,M001,Matrículas em escolas públicas
+35,matriculas_infantil,uso_do_solo_no_hexagono,M002,Matrículas no ensino infantil
+36,matriculas_fundamental,uso_do_solo_no_hexagono,M003,Matrículas no ensino fundamental
+37,matriculas_medio,uso_do_solo_no_hexagono,M004,Matrículas no ensino médio
+38,saude_total,uso_do_solo_no_hexagono,S001,Estabelecimentos de saúde neste hexágono
+39,saude_baixa_compl,uso_do_solo_no_hexagono,S002,Estabelecimentos de saúde de baixa complexidade
+40,saude_media_compl,uso_do_solo_no_hexagono,S003,Estabelecimentos de saúde de média complexidade
+41,saude_alta_compl,uso_do_solo_no_hexagono,S004,Estabelecimentos de saúde de alta complexidade
+42,cras_total,uso_do_solo_no_hexagono,C001,CRAS — Centros de Referência de Assistência Social
+43,empregos_15min,acessibilidade_empregos,CMATT15,Empregos ALCANÇÁVEIS a partir daqui em até 15 minutos
+44,empregos_30min,acessibilidade_empregos,CMATT30,Empregos alcançáveis em até 30 minutos
+45,empregos_45min,acessibilidade_empregos,CMATT45,Empregos alcançáveis em até 45 minutos. Só caminhada e bicicleta têm este corte
+46,empregos_60min,acessibilidade_empregos,CMATT60,Empregos alcançáveis em até 60 minutos
+47,empregos_90min,acessibilidade_empregos,CMATT90,Empregos alcançáveis em até 90 minutos. Só transporte público e automóvel
+48,empregos_120min,acessibilidade_empregos,CMATT120,Empregos alcançáveis em até 120 minutos. Só transporte público e automóvel
+49,empregos_baixa_esc_60min,acessibilidade_empregos,CMATB60,Empregos de baixa escolaridade alcançáveis em até 60 minutos
+50,empregos_media_esc_60min,acessibilidade_empregos,CMATM60,Empregos de média escolaridade alcançáveis em até 60 minutos
+51,empregos_alta_esc_60min,acessibilidade_empregos,CMATA60,Empregos de alta escolaridade alcançáveis em até 60 minutos
+52,saude_30min,acessibilidade_servicos,CMAST30,Estabelecimentos de saúde alcançáveis em até 30 minutos
+53,saude_60min,acessibilidade_servicos,CMAST60,Estabelecimentos de saúde alcançáveis em até 60 minutos
+54,escolas_30min,acessibilidade_servicos,CMAET30,Escolas públicas alcançáveis em até 30 minutos
+55,escolas_60min,acessibilidade_servicos,CMAET60,Escolas públicas alcançáveis em até 60 minutos
+56,matriculas_30min,acessibilidade_servicos,CMAMT30,Matrículas públicas alcançáveis em até 30 minutos
+57,matriculas_60min,acessibilidade_servicos,CMAMT60,Matrículas públicas alcançáveis em até 60 minutos
+58,cras_30min,acessibilidade_servicos,CMACT30,CRAS alcançáveis em até 30 minutos
+59,cras_60min,acessibilidade_servicos,CMACT60,CRAS alcançáveis em até 60 minutos
+60,tempo_saude_qualquer,tempo_ate_o_mais_proximo,TMIST,"Minutos até o estabelecimento de saúde mais próximo — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+61,tempo_saude_baixa_compl,tempo_ate_o_mais_proximo,TMISB,"Minutos até a saúde de baixa complexidade mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+62,tempo_saude_media_compl,tempo_ate_o_mais_proximo,TMISM,"Minutos até a saúde de média complexidade mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+63,tempo_saude_alta_compl,tempo_ate_o_mais_proximo,TMISA,"Minutos até a saúde de alta complexidade mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+64,tempo_escola_qualquer,tempo_ate_o_mais_proximo,TMIET,"Minutos até a escola pública mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+65,tempo_escola_infantil,tempo_ate_o_mais_proximo,TMIEI,"Minutos até a escola de ensino infantil mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+66,tempo_escola_fundamental,tempo_ate_o_mais_proximo,TMIEF,"Minutos até a escola de ensino fundamental mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+67,tempo_escola_medio,tempo_ate_o_mais_proximo,TMIEM,"Minutos até a escola de ensino médio mais próxima — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+68,tempo_cras,tempo_ate_o_mais_proximo,TMICT,"Minutos até o CRAS mais próximo — VAZIO significa NÃO ALCANÇÁVEL no limite de roteamento, não dado faltante"
+69,pessoas_que_alcancam_60min,acessibilidade_servicos,CMPPT60,Acessibilidade passiva: pessoas que alcançam ESTE hexágono em até 60 min

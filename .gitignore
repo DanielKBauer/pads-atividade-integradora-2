@@ -1,0 +1,19 @@
+# Downloads intermediários do AOP — regeneráveis pelo notebook
+dados/cache/
+
+# Biblioteca local de pacotes
+renv/library/
+.Rprofile
+
+# Sistema / R / IDE
+.DS_Store
+*.Rhistory
+*.RData
+*.Rproj.user
+.Rproj.user/
+.cursor/
+.quarto/
+
+# Artefatos locais
+*.zip
+*.bak
