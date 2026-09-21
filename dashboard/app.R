@@ -95,20 +95,8 @@ tab_distritos <- hex %>%
 
 POP_DISTRITO <- setNames(tab_distritos$pop, tab_distritos$ds_nome)
 
-# --- painel executivo: sempre a metade da cidade (sem slider) ---------------
-EXEC_N <- floor(nrow(tab_distritos) / 2)
-exec_L <- local({
-  piores_iptc   <- tab_distritos %>% arrange(iptc_2025) %>% slice_head(n = EXEC_N) %>% pull(ds_nome)
-  piores_acesso <- tab_distritos %>% arrange(pct60) %>% slice_head(n = EXEC_N) %>% pull(ds_nome)
-  list(
-    n         = EXEC_N,
-    iptc      = piores_iptc,
-    acesso    = piores_acesso,
-    overlap   = intersect(piores_iptc, piores_acesso),
-    so_acesso = setdiff(piores_acesso, piores_iptc),
-    so_iptc   = setdiff(piores_iptc, piores_acesso)
-  )
-})
+# --- painel executivo: N ajustável via slider, padrão = metade da cidade ----
+EXEC_N_DEFAULT <- floor(nrow(tab_distritos) / 2)
 
 rotulo_hex <- function(d) {
   sprintf(
@@ -212,26 +200,27 @@ ui <- dashboardPage(
         .main-header .navbar { margin-left: 0 !important; }
         .main-header .logo { width: auto; padding: 0 18px; }
 
-        .btn-topo {
-          width: 100%; border: none !important; border-radius: 3px; padding: 14px 16px;
-          text-align: left; color: #fff !important; position: relative;
-          box-shadow: none; outline: none !important; display: block;
-          white-space: normal; height: auto !important;
+        .camada-seletor { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .camada-pill {
+          border: 1px solid #d9d8d4 !important; background: #fff !important; border-radius: 20px !important;
+          padding: 7px 14px !important; font-size: 12.5px; color: #52514e !important; cursor: pointer;
+          box-shadow: none !important; outline: none !important; height: auto !important;
+          display: inline-flex; align-items: center; gap: 6px; white-space: normal;
         }
-        .btn-topo .rotulo { font-size: 12px; opacity: .9; display: block; }
-        .btn-topo .valor { font-size: 28px; font-weight: 700; line-height: 1.15; display: block; margin-top: 2px; }
-        .btn-topo .hint { font-size: 11px; opacity: .8; display: block; margin-top: 4px; }
-        .btn-iptc { background: #ff851b; }
-        .btn-acesso { background: #0073b7; }
-        .btn-gap { background: #dd4b39; }
-        .btn-topo.ativa { box-shadow: inset 0 0 0 3px #111; filter: brightness(1.05); }
-        .btn-topo:hover { filter: brightness(1.08); }
+        .camada-pill .valor { font-weight: 700; }
+        .camada-pill:hover { border-color: #52514e !important; }
+        .camada-pill.ativa { color: #fff !important; }
+        #btn_acesso.ativa { background: #0073b7 !important; border-color: #0073b7 !important; }
+        #btn_iptc.ativa { background: #ff851b !important; border-color: #ff851b !important; }
+        #btn_gap.ativa { background: #dd4b39 !important; border-color: #dd4b39 !important; }
 
         .tabela-dist { width: 100%; font-size: 12px; border-collapse: collapse; }
         .tabela-dist th {
           text-align: left; color: #6b6560; font-weight: 600; padding: 6px 5px;
           border-bottom: 1px solid #ddd; position: sticky; top: 0; background: #fff; z-index: 1;
         }
+        .tabela-dist th.ordenavel { cursor: pointer; user-select: none; }
+        .tabela-dist th.ordenavel:hover { color: #1f1d1b; }
         .tabela-dist td { padding: 5px; border-bottom: 1px solid #eee; }
         .tabela-dist tr:hover { background: #f7f3ef; cursor: pointer; }
         .tabela-dist tr.selecionada { background: #efeae3; }
@@ -300,8 +289,8 @@ ui <- dashboardPage(
           display: flex; width: 100%; height: 22px; border-radius: 3px; overflow: hidden; border: 1px solid #d9d8d4;
         }
         .exec-barra-seg { height: 100%; }
-        .exec-barra-alto { background: #1a9850; }
-        .exec-barra-baixo { background: #c9c7c1; }
+        .exec-barra-alto { background: #0073b7; }
+        .exec-barra-baixo { background: #2b2a28; }
         .exec-barra-legenda-num { font-size: 11px; color: #6b6560; margin-top: 3px; }
       ")),
       tags$script(HTML("
@@ -317,35 +306,6 @@ ui <- dashboardPage(
       "))
     ),
 
-    fluidRow(
-      column(4, actionButton(
-        "btn_acesso",
-        class = "btn-topo btn-acesso",
-        label = tagList(
-          tags$span(class = "rotulo", "Acesso médio ponderado · TP ≤60 min"),
-          tags$span(class = "valor", fmt_num(ACESSO_MEDIO)),
-          tags$span(class = "hint", "Clique para ver o acesso no mapa")
-        )
-      )),
-      column(4, actionButton(
-        "btn_iptc",
-        class = "btn-topo btn-iptc",
-        label = tagList(
-          tags$span(class = "rotulo", "IPTC da cidade (oficial 2025)"),
-          tags$span(class = "valor", sprintf("%.2f", CIDADE_IPTC)),
-          tags$span(class = "hint", "Clique para ver a nota no mapa")
-        )
-      )),
-      column(4, actionButton(
-        "btn_gap",
-        class = "btn-topo btn-gap",
-        label = tagList(
-          tags$span(class = "rotulo", "GAP médio · IPTC − acesso"),
-          tags$span(class = "valor", fmt_num(GAP_MEDIO)),
-          tags$span(class = "hint", "Clique para ver o GAP no mapa")
-        )
-      ))
-    ),
     tags$div(
       class = "legenda-topo",
       HTML(paste0(
@@ -383,6 +343,18 @@ ui <- dashboardPage(
         width = 9, solidHeader = FALSE,
         title = uiOutput("titulo_mapa"),
         tags$div(
+          class = "camada-seletor",
+          actionButton("btn_acesso", class = "camada-pill", label = tagList(
+            "Acesso", tags$span(class = "valor", fmt_num(ACESSO_MEDIO))
+          )),
+          actionButton("btn_iptc", class = "camada-pill", label = tagList(
+            "IPTC", tags$span(class = "valor", sprintf("%.2f", CIDADE_IPTC))
+          )),
+          actionButton("btn_gap", class = "camada-pill", label = tagList(
+            "GAP", tags$span(class = "valor", fmt_num(GAP_MEDIO))
+          ))
+        ),
+        tags$div(
           class = "rede-box",
           style = "margin-bottom:8px;",
           tags$div(
@@ -407,9 +379,9 @@ ui <- dashboardPage(
             HTML(
               "<i>Planejada</i> = camada oficial de expansão da rede (GeoSampa: metrô, trem e corredores ",
               "planejados com horizonte 2025 na fonte). Não é uma promessa de entrega — parte pode já ter ",
-              "sido inaugurada ou adiada desde a coleta dos dados. Cor da linha tracejada = potencial de ",
-              "impacto (veja o painel executivo abaixo): <b style='color:#1a9850;'>verde</b> cruza área hoje ",
-              "mal servida, <b style='color:#9c9a94;'>cinza</b> já é bem servida."
+              "sido inaugurada ou adiada desde a coleta dos dados. A cor da linha tracejada não indica o modal ",
+              "(metrô/trem/corredor) — indica o potencial de impacto (veja o painel executivo abaixo): ",
+              "<b style='color:#0073b7;'>azul</b> cruza área hoje mal servida, <b style='color:#2b2a28;'>preta</b> já é bem servida."
             )
           )
         ),
@@ -430,10 +402,13 @@ ui <- dashboardPage(
         tags$div(class = "exec-subtitulo", "Distritos que ficariam de fora da priorização via IPTC"),
         tags$div(
           class = "legenda-topo",
-          "Hoje a SPTrans prioriza melhorias pela nota do IPTC. Esta seção mostra o que mudaria se a ",
-          "priorização levasse em conta o acesso real a emprego em ≤60 min — usando os mesmos dados e a ",
-          "mesma agregação por distrito do mapa e da tabela acima. Comparação sempre com a metade da cidade ",
-          sprintf("com pior colocação em cada métrica (%d de %d distritos).", EXEC_N, nrow(tab_distritos))
+          "Esta seção mostra o que mudaria se a priorização levasse em conta o acesso real a emprego em ",
+          "≤60 min — usando os mesmos dados e a mesma agregação por distrito do mapa e da tabela acima."
+        ),
+        sliderInput(
+          "exec_topn",
+          sprintf("Quantos distritos considerar como \"prioritários\" (top N piores, de %d no total)", nrow(tab_distritos)),
+          min = 5, max = 90, value = EXEC_N_DEFAULT, step = 1, width = "100%"
         ),
         uiOutput("exec_headline"),
         tags$div(
@@ -469,11 +444,25 @@ server <- function(input, output, session) {
 
   camada <- reactiveVal("pct60")
   selecionados <- reactiveVal(character(0))
+  ordenacao <- reactiveVal(list(col = "pct60", dir = "asc"))
 
   observeEvent(input$btn_iptc,   { camada("iptc_2025") })
   observeEvent(input$btn_acesso, { camada("pct60") })
   observeEvent(input$btn_gap,    { camada("gap") })
   observeEvent(input$limpar_sel, { selecionados(character(0)) })
+
+  # --- ordenação da tabela (clique no cabeçalho, tipo planilha) ----------
+  DIR_PADRAO_COL <- c(pct60 = "asc", iptc_2025 = "asc", gap_med = "desc")
+  observeEvent(input$tabela_sort_col, {
+    col <- input$tabela_sort_col
+    atual <- ordenacao()
+    novo_dir <- if (identical(atual$col, col)) {
+      if (atual$dir == "asc") "desc" else "asc"
+    } else {
+      DIR_PADRAO_COL[[col]]
+    }
+    ordenacao(list(col = col, dir = novo_dir))
+  }, ignoreInit = TRUE)
 
   # --- busca de distrito (tabela lateral) ---------------------------------
   tab_distritos_filtrado <- reactive({
@@ -484,9 +473,32 @@ server <- function(input, output, session) {
     tab_distritos[grepl(alvo, nomes, fixed = TRUE), , drop = FALSE]
   })
 
-  # --- painel executivo: IPTC vs. acesso real (sempre metade da cidade) --
+  tab_distritos_ordenado <- reactive({
+    tab <- tab_distritos_filtrado()
+    o <- ordenacao()
+    vals <- tab[[o$col]]
+    ord <- if (o$dir == "asc") order(vals) else order(-vals)
+    tab[ord, , drop = FALSE]
+  })
+
+  # --- painel executivo: IPTC vs. acesso real (N ajustável pelo slider) --
+  exec_L <- reactive({
+    n <- input$exec_topn
+    req(n)
+    piores_iptc   <- tab_distritos %>% arrange(iptc_2025) %>% slice_head(n = n) %>% pull(ds_nome)
+    piores_acesso <- tab_distritos %>% arrange(pct60) %>% slice_head(n = n) %>% pull(ds_nome)
+    list(
+      n         = n,
+      iptc      = piores_iptc,
+      acesso    = piores_acesso,
+      overlap   = intersect(piores_iptc, piores_acesso),
+      so_acesso = setdiff(piores_acesso, piores_iptc),
+      so_iptc   = setdiff(piores_iptc, piores_acesso)
+    )
+  })
+
   output$exec_headline <- renderUI({
-    L <- exec_L
+    L <- exec_L()
     pop_cidade  <- sum(tab_distritos$pop)
     pop_perdida <- sum(tab_distritos$pop[tab_distritos$ds_nome %in% L$so_acesso])
     tags$div(
@@ -499,11 +511,11 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$exec_ver_mapa, {
-    selecionados(exec_L$so_acesso)
+    selecionados(exec_L()$so_acesso)
   })
 
   output$exec_matriz <- renderUI({
-    L <- exec_L
+    L <- exec_L()
     n <- L$n
     resto <- setdiff(tab_distritos$ds_nome, union(L$iptc, L$acesso))
 
@@ -532,7 +544,7 @@ server <- function(input, output, session) {
   })
 
   output$exec_legenda <- renderUI({
-    L <- exec_L
+    L <- exec_L()
     resto <- setdiff(tab_distritos$ds_nome, union(L$iptc, L$acesso))
     pop_de <- function(nomes) sum(tab_distritos$pop[tab_distritos$ds_nome %in% nomes])
 
@@ -588,7 +600,7 @@ server <- function(input, output, session) {
           tags$div(class = "exec-barra-seg exec-barra-baixo", style = sprintf("width:%.2f%%;", 100 - p_alto))
         ),
         tags$div(class = "exec-barra-legenda-num", HTML(sprintf(
-          "<b style='color:#1a9850;'>%s km</b> em área mal servida (%.0f%%) · <b style='color:#87857c;'>%s km</b> em área já bem servida (%.0f%%)",
+          "<b style='color:#0073b7;'>%s km</b> em área mal servida (%.0f%%) · <b style='color:#2b2a28;'>%s km</b> em área já bem servida (%.0f%%)",
           fmt_num(km_alto), p_alto, fmt_num(km_baixo), 100 - p_alto
         )))
       )
@@ -675,11 +687,24 @@ server <- function(input, output, session) {
   })
 
   output$tabela_dist <- renderUI({
-    tab <- tab_distritos_filtrado()
+    tab <- tab_distritos_ordenado()
     sel <- selecionados()
+    o <- ordenacao()
 
     if (!nrow(tab)) {
       return(tags$p(style = "color:#6b6560;", "Nenhum distrito encontrado."))
+    }
+
+    seta <- function(col) {
+      if (!identical(o$col, col)) return("")
+      if (o$dir == "asc") " ▲" else " ▼"
+    }
+    th_ord <- function(col, rotulo) {
+      tags$th(
+        class = "ordenavel", style = "text-align:right;",
+        onclick = sprintf("Shiny.setInputValue('tabela_sort_col','%s',{priority:'event'})", col),
+        paste0(rotulo, seta(col))
+      )
     }
 
     linhas <- lapply(seq_len(nrow(tab)), function(i) {
@@ -706,9 +731,9 @@ server <- function(input, output, session) {
         tags$th(""),
         tags$th("#"),
         tags$th("Distrito"),
-        tags$th(style = "text-align:right;", "Acesso"),
-        tags$th(style = "text-align:right;", "IPTC"),
-        tags$th(style = "text-align:right;", "GAP")
+        th_ord("pct60", "Acesso"),
+        th_ord("iptc_2025", "IPTC"),
+        th_ord("gap_med", "GAP")
       )),
       tags$tbody(linhas)
     )
@@ -721,6 +746,11 @@ server <- function(input, output, session) {
       maxZoom = 14,
       attributionControl = FALSE
     )) %>%
+      # panes com z-index fixo: garante que rede e destaque fiquem sempre
+      # acima dos hexágonos, mesmo quando cada camada é redesenhada em
+      # momentos diferentes (uma independe da outra)
+      addMapPane("panoRede", zIndex = 410) %>%
+      addMapPane("panoDestaque", zIndex = 420) %>%
       setMaxBounds(MAX_BOUNDS$lng1, MAX_BOUNDS$lat1, MAX_BOUNDS$lng2, MAX_BOUNDS$lat2) %>%
       fitBounds(MAX_BOUNDS$lng1, MAX_BOUNDS$lat1, MAX_BOUNDS$lng2, MAX_BOUNDS$lat2) %>%
       addPolygons(
@@ -793,6 +823,9 @@ server <- function(input, output, session) {
   })
 
   # overlay de rede modal
+  # Metrô/CPTM/Corredor controlam só a rede EXISTENTE. "Planejada" é um toggle
+  # independente: quando marcado, sempre mostra a rede planejada inteira
+  # (todos os modais), sem depender de quais modais estão marcados ao lado.
   observe({
     req(!is.null(rede), nrow(rede) > 0)
     mods <- input$rede_modais
@@ -800,10 +833,8 @@ server <- function(input, output, session) {
 
     if (is.null(mods) || !length(mods)) return()
 
-    quer_planejada <- "planejada" %in% mods
-    modos <- setdiff(mods, "planejada")
-    modos_existente <- if (quer_planejada && !length(modos)) character(0) else modos
-    modos_planejada <- if (!length(modos)) c("metro", "cptm", "corredor") else modos
+    modos_existente <- intersect(mods, c("metro", "cptm", "corredor"))
+    quer_planejada  <- "planejada" %in% mods
 
     r_ex <- if (length(modos_existente)) {
       rede %>% filter(status == "existente", modal %in% modos_existente)
@@ -811,7 +842,7 @@ server <- function(input, output, session) {
       rede[0, ]
     }
     r_pl <- if (quer_planejada && !is.null(REDE_PLANEJADA_IMPACTO)) {
-      REDE_PLANEJADA_IMPACTO %>% filter(modal %in% modos_planejada)
+      REDE_PLANEJADA_IMPACTO
     } else {
       NULL
     }
@@ -822,16 +853,16 @@ server <- function(input, output, session) {
           data = r_ex, group = "Rede",
           color = ~ifelse(!is.na(cor) & cor != "", cor, COR_MODAL[modal]),
           weight = 3.2, opacity = 0.92,
-          options = pathOptions(clickable = FALSE)
+          options = pathOptions(clickable = FALSE, pane = "panoRede")
         )
     }
     if (!is.null(r_pl) && nrow(r_pl)) {
-      cor_tier <- c(alto_impacto = "#1a9850", baixo_impacto = "#9c9a94", sem_dados = "#c9c7c1")
+      cor_tier <- c(alto_impacto = "#0073b7", baixo_impacto = "#2b2a28", sem_dados = "#9c9a94")
       proxy <- proxy %>%
         addPolylines(
           data = r_pl, group = "Rede",
-          color = ~cor_tier[tier],
-          weight = 2.6, opacity = 0.85, dashArray = "6,6",
+          color = ~unname(cor_tier[tier]),
+          weight = 2.4, opacity = 0.75, dashArray = "6,6",
           label = lapply(r_pl$label_html, HTML),
           labelOptions = labelOptions(
             style = list(
@@ -841,7 +872,7 @@ server <- function(input, output, session) {
             ),
             textsize = "12px"
           ),
-          options = pathOptions(clickable = TRUE)
+          options = pathOptions(clickable = TRUE, pane = "panoRede")
         )
     }
   })
@@ -864,7 +895,7 @@ server <- function(input, output, session) {
       addPolygons(
         data = sel_dist, group = "Destaque",
         fill = FALSE, color = cores, weight = 2.8, opacity = 1,
-        options = pathOptions(clickable = FALSE)
+        options = pathOptions(clickable = FALSE, pane = "panoDestaque")
       )
 
     bb <- st_bbox(sel_dist)
