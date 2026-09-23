@@ -49,6 +49,23 @@ MAX_BOUNDS <- list(
   lng2 = unname(bb_sp["xmax"] + pad), lat2 = unname(bb_sp["ymax"] + pad)
 )
 
+# Vista inicial: o extremo sul do município é uma faixa rural bem esparsa que,
+# se entrar no fitBounds, força um zoom out desnecessário e desperdiça altura
+# de tela. Usamos como corte sul o próprio limite do distrito mais ao sul que
+# ainda concentra bastante gente (Grajau) + folga, mantendo o resto do
+# contorno (norte/leste/oeste) intacto. O pan continua livre até MAX_BOUNDS.
+bb_grajau <- st_bbox(hex[hex$ds_nome == "GRAJAU" & !is.na(hex$ds_nome), ])
+VISTA_INICIAL <- list(
+  lng1 = MAX_BOUNDS$lng1, lat1 = unname(bb_grajau["ymin"]) - 0.015,
+  lng2 = MAX_BOUNDS$lng2, lat2 = MAX_BOUNDS$lat2
+)
+# fitBounds() nesse formato de caixa (larga e baixa) acaba batendo no minZoom
+# antes de realmente aproximar — por isso usamos um zoom fixo, calibrado à
+# mão, centralizado nessa vista. minZoom continua liberando zoom out manual.
+VISTA_INICIAL$lng_centro <- (VISTA_INICIAL$lng1 + VISTA_INICIAL$lng2) / 2
+VISTA_INICIAL$lat_centro <- (VISTA_INICIAL$lat1 + VISTA_INICIAL$lat2) / 2
+ZOOM_INICIAL <- 11
+
 PAL_BR <- c("#1a9850", "#91cf60", "#d9ef8b", "#fee08b", "#fc8d59", "#d73027")
 pal_acesso <- colorNumeric(PAL_BR, domain = c(0, max(80, max(hex$pct60, na.rm = TRUE))),
                            reverse = TRUE, na.color = "#d9d8d4")
@@ -88,9 +105,16 @@ tab_distritos <- hex %>%
       mean(pct60, na.rm = TRUE)
     },
     gap_med = median(gap[habitado %in% TRUE], na.rm = TRUE),
+    # deficit = pop x quantos pontos de acesso o hexágono está abaixo da
+    # mediana da cidade (já calculado por hexágono no prep_dados.R). Somado
+    # por distrito, vira um score de prioridade: pondera o quão ruim é o
+    # acesso pela quantidade de gente afetada — não é a mesma coisa que a
+    # nota de acesso (%), que trata todo distrito como se tivesse o mesmo
+    # peso populacional.
+    prioridade = sum(deficit[habitado %in% TRUE], na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(pct60) %>%
+  arrange(desc(prioridade)) %>%
   mutate(rank = row_number())
 
 POP_DISTRITO <- setNames(tab_distritos$pop, tab_distritos$ds_nome)
@@ -214,18 +238,18 @@ ui <- dashboardPage(
         #btn_iptc.ativa { background: #ff851b !important; border-color: #ff851b !important; }
         #btn_gap.ativa { background: #dd4b39 !important; border-color: #dd4b39 !important; }
 
-        .tabela-dist { width: 100%; font-size: 12px; border-collapse: collapse; }
+        .tabela-dist { width: 100%; font-size: 11px; border-collapse: collapse; }
         .tabela-dist th {
           text-align: left; color: #6b6560; font-weight: 600; padding: 6px 5px;
           border-bottom: 1px solid #ddd; position: sticky; top: 0; background: #fff; z-index: 1;
         }
         .tabela-dist th.ordenavel { cursor: pointer; user-select: none; }
         .tabela-dist th.ordenavel:hover { color: #1f1d1b; }
-        .tabela-dist td { padding: 5px; border-bottom: 1px solid #eee; }
+        .tabela-dist td { padding: 4px 3px; border-bottom: 1px solid #eee; }
         .tabela-dist tr:hover { background: #f7f3ef; cursor: pointer; }
         .tabela-dist tr.selecionada { background: #efeae3; }
         .tabela-dist .gap-ruim { color: #d73027; font-weight: 700; }
-        .tabela-wrap { max-height: 1080px; overflow-y: auto; }
+        .tabela-wrap { max-height: 820px; overflow-y: auto; overflow-x: auto; }
         .legenda-topo { font-size: 12px; color: #6b6560; margin: 0 0 8px 0; }
         .rede-box .checkbox { margin-top: 2px; margin-bottom: 2px; }
         .rede-box label { font-weight: 400; font-size: 12.5px; }
@@ -237,6 +261,11 @@ ui <- dashboardPage(
         .cmp-card .meta { font-size: 11px; color: #6b6560; line-height: 1.45; }
         .cmp-card .meta b { color: #1f1d1b; }
 
+        .titulo-dash {
+          font-size: 26px; font-weight: 800; color: #1f1d1b; letter-spacing: .01em;
+          margin: 4px 0 2px 0; text-transform: uppercase;
+        }
+        .subtitulo-dash { font-size: 13.5px; color: #6b6560; margin: 0 0 16px 0; }
         .secao-titulo {
           font-size: 18px; font-weight: 700; color: #1f1d1b; margin: 22px 0 8px 0;
         }
@@ -306,6 +335,12 @@ ui <- dashboardPage(
       "))
     ),
 
+    tags$div(class = "titulo-dash", "Painel de Acessibilidade em SP"),
+    tags$div(
+      class = "subtitulo-dash",
+      "IPTC (nota oficial de permeabilidade) × acesso real a empregos em ≤60 min — onde a priorização atual acerta e onde erra."
+    ),
+
     tags$div(
       class = "legenda-topo",
       HTML(paste0(
@@ -321,11 +356,15 @@ ui <- dashboardPage(
     tags$div(class = "secao-titulo", "Mapa Interativo"),
     fluidRow(
       box(
-        width = 3, solidHeader = FALSE,
+        width = 4, solidHeader = FALSE,
         title = "Distritos — comparar acesso",
         tags$div(
           class = "legenda-topo",
-          "Clique para selecionar/desselecionar (vários). Ordenado do pior para o melhor acesso."
+          "Clique para selecionar/desselecionar (vários). Clique num cabeçalho pra reordenar. ",
+          "Ordenado por padrão por Prioridade — posição do distrito (1º a 96º) num ranking que combina ",
+          "o quanto o acesso está abaixo da mediana da cidade com a população afetada. 1º = maior ",
+          "prioridade real. Acesso bruto (%) não pondera pela população; um distrito minúsculo com ",
+          "acesso péssimo pode ganhar do tamanho de um grande com acesso moderadamente ruim."
         ),
         tags$div(
           style = "margin-bottom:8px;",
@@ -340,7 +379,7 @@ ui <- dashboardPage(
         tags$div(class = "tabela-wrap", uiOutput("tabela_dist"))
       ),
       box(
-        width = 9, solidHeader = FALSE,
+        width = 8, solidHeader = FALSE,
         title = uiOutput("titulo_mapa"),
         tags$div(
           class = "camada-seletor",
@@ -385,7 +424,7 @@ ui <- dashboardPage(
             )
           )
         ),
-        leafletOutput("mapa", height = 1050),
+        leafletOutput("mapa", height = 820),
         footer = tags$span(
           style = "font-size:11px;color:#6b6560;",
           "Somente o município de São Paulo. Rede: GeoSampa / sp-mapas. IPTC SPTrans 2025 · AOP/Ipea 2019 (TP, pico)."
@@ -403,7 +442,8 @@ ui <- dashboardPage(
         tags$div(
           class = "legenda-topo",
           "Esta seção mostra o que mudaria se a priorização levasse em conta o acesso real a emprego em ",
-          "≤60 min — usando os mesmos dados e a mesma agregação por distrito do mapa e da tabela acima."
+          "≤60 min, ponderado pela população de cada distrito — usando os mesmos dados e a mesma ",
+          "agregação por distrito do mapa e da tabela acima (coluna \"Prioridade\")."
         ),
         sliderInput(
           "exec_topn",
@@ -444,7 +484,7 @@ server <- function(input, output, session) {
 
   camada <- reactiveVal("pct60")
   selecionados <- reactiveVal(character(0))
-  ordenacao <- reactiveVal(list(col = "pct60", dir = "asc"))
+  ordenacao <- reactiveVal(list(col = "prioridade", dir = "desc"))
 
   observeEvent(input$btn_iptc,   { camada("iptc_2025") })
   observeEvent(input$btn_acesso, { camada("pct60") })
@@ -452,7 +492,7 @@ server <- function(input, output, session) {
   observeEvent(input$limpar_sel, { selecionados(character(0)) })
 
   # --- ordenação da tabela (clique no cabeçalho, tipo planilha) ----------
-  DIR_PADRAO_COL <- c(pct60 = "asc", iptc_2025 = "asc", gap_med = "desc")
+  DIR_PADRAO_COL <- c(pct60 = "asc", iptc_2025 = "asc", gap_med = "desc", prioridade = "desc")
   observeEvent(input$tabela_sort_col, {
     col <- input$tabela_sort_col
     atual <- ordenacao()
@@ -486,7 +526,7 @@ server <- function(input, output, session) {
     n <- input$exec_topn
     req(n)
     piores_iptc   <- tab_distritos %>% arrange(iptc_2025) %>% slice_head(n = n) %>% pull(ds_nome)
-    piores_acesso <- tab_distritos %>% arrange(pct60) %>% slice_head(n = n) %>% pull(ds_nome)
+    piores_acesso <- tab_distritos %>% arrange(desc(prioridade)) %>% slice_head(n = n) %>% pull(ds_nome)
     list(
       n         = n,
       iptc      = piores_iptc,
@@ -504,7 +544,7 @@ server <- function(input, output, session) {
     tags$div(
       class = "exec-headline",
       HTML(sprintf(
-        "<b>%d distritos</b> (%s pessoas, %s da cidade) estão entre os piores em acesso real a emprego, mas <b>ficariam de fora</b> da priorização pelo IPTC.",
+        "<b>%d distritos</b> (%s pessoas, %s da cidade) estão entre os piores em prioridade real de acesso a emprego (acesso ponderado pela população), mas <b>ficariam de fora</b> da priorização pelo IPTC.",
         length(L$so_acesso), fmt_int(pop_perdida), fmt_pct(100 * pop_perdida / pop_cidade)
       ))
     )
@@ -530,7 +570,7 @@ server <- function(input, output, session) {
     tags$div(
       class = "exec-matriz-grid",
       tags$div(class = "exec-matriz-corner"),
-      tags$div(class = "exec-matriz-colhead", sprintf("Entre os %d piores em acesso", n)),
+      tags$div(class = "exec-matriz-colhead", sprintf("Entre os %d piores em prioridade real", n)),
       tags$div(class = "exec-matriz-colhead", "NÃO está entre os piores"),
 
       tags$div(class = "exec-matriz-rowhead", sprintf("Priorizado pelo IPTC (top %d)", n)),
@@ -563,11 +603,11 @@ server <- function(input, output, session) {
 
     tagList(
       item("#1a9850", "Acerto", length(L$overlap), pop_de(L$overlap),
-           "Priorizado pelo IPTC e também entre os piores em acesso real — a priorização atual funcionaria aqui."),
+           "Priorizado pelo IPTC e também entre os piores em prioridade real — a priorização atual funcionaria aqui."),
       item("#c9660b", "Prioridade desperdiçada", length(L$so_iptc), pop_de(L$so_iptc),
-           "Priorizado pelo IPTC, mas não está entre os piores em acesso real."),
+           "Priorizado pelo IPTC, mas não está entre os piores em prioridade real."),
       item("#d73027", "Oportunidade perdida", length(L$so_acesso), pop_de(L$so_acesso),
-           "Fora da priorização do IPTC, mas está entre os piores em acesso real — ficaria sem melhorias."),
+           "Fora da priorização do IPTC, mas está entre os piores em prioridade real — ficaria sem melhorias."),
       item("#9c9a94", "Acerto por omissão", length(resto), pop_de(resto),
            "Corretamente não priorizado nos dois critérios.")
     )
@@ -629,7 +669,7 @@ server <- function(input, output, session) {
     # tamanho de container ainda pequeno e abre zoomed out demais.
     proxy <- leafletProxy("mapa")
     invokeMethod(proxy, data = NULL, "invalidateSize")
-    proxy %>% fitBounds(MAX_BOUNDS$lng1, MAX_BOUNDS$lat1, MAX_BOUNDS$lng2, MAX_BOUNDS$lat2)
+    proxy %>% setView(VISTA_INICIAL$lng_centro, VISTA_INICIAL$lat_centro, ZOOM_INICIAL)
   }, once = TRUE)
 
   observeEvent(input$dist_toggle, {
@@ -678,7 +718,8 @@ server <- function(input, output, session) {
           HTML(paste0(
             "Acesso <b>", fmt_num(r$pct60), "</b><br/>",
             "IPTC <b>", fmt_num(r$iptc_2025), "</b><br/>",
-            "GAP <b style='color:#d73027;'>", fmt_num(r$gap_med), "</b>"
+            "GAP <b style='color:#d73027;'>", fmt_num(r$gap_med), "</b><br/>",
+            "Prioridade <b>", sprintf("%dº", r$rank), "</b> de ", nrow(tab_distritos)
           ))
         )
       )
@@ -716,12 +757,13 @@ server <- function(input, output, session) {
           "Shiny.setInputValue('dist_toggle', '%s', {priority: 'event'})",
           gsub("'", "\\\\'", r$ds_nome)
         ),
-        tags$td(style = "width:22px;text-align:center;", if (marcado) "✓" else ""),
-        tags$td(style = "color:#87857c;width:26px;", i),
+        tags$td(style = "width:14px;text-align:center;", if (marcado) "✓" else ""),
+        tags$td(style = "color:#87857c;width:18px;", i),
         tags$td(htmlEscape(as.character(r$ds_nome))),
         tags$td(style = "text-align:right;", fmt_num(r$pct60)),
         tags$td(style = "text-align:right;", fmt_num(r$iptc_2025)),
-        tags$td(class = "gap-ruim", style = "text-align:right;", fmt_num(r$gap_med))
+        tags$td(class = "gap-ruim", style = "text-align:right;", fmt_num(r$gap_med)),
+        tags$td(style = "text-align:right;font-weight:700;", sprintf("%dº", r$rank))
       )
     })
 
@@ -733,7 +775,8 @@ server <- function(input, output, session) {
         tags$th("Distrito"),
         th_ord("pct60", "Acesso"),
         th_ord("iptc_2025", "IPTC"),
-        th_ord("gap_med", "GAP")
+        th_ord("gap_med", "GAP"),
+        th_ord("prioridade", "Prioridade")
       )),
       tags$tbody(linhas)
     )
@@ -752,7 +795,7 @@ server <- function(input, output, session) {
       addMapPane("panoRede", zIndex = 410) %>%
       addMapPane("panoDestaque", zIndex = 420) %>%
       setMaxBounds(MAX_BOUNDS$lng1, MAX_BOUNDS$lat1, MAX_BOUNDS$lng2, MAX_BOUNDS$lat2) %>%
-      fitBounds(MAX_BOUNDS$lng1, MAX_BOUNDS$lat1, MAX_BOUNDS$lng2, MAX_BOUNDS$lat2) %>%
+      setView(VISTA_INICIAL$lng_centro, VISTA_INICIAL$lat_centro, ZOOM_INICIAL) %>%
       addPolygons(
         data = contorno,
         fillColor = "#f7f5f1", fillOpacity = 1,
